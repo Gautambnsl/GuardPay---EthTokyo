@@ -1,8 +1,10 @@
 # GuardPay
 
-**A treasury AI agent that pays tokenized supplier invoices over x402, screens every payment with Intercepta before signing it away, and requires a fresh World ID-verified human approval for anything large or risky.**
+**An autonomous treasury agent that pays tokenized supplier invoices over x402, and screens every payment with Intercepta before it signs anything away. For large or risky payments it also requires a fresh World ID-verified human approval.**
 
-Built at ETHGlobal Tokyo. Testnet USDC on Base Sepolia.
+Built at ETHGlobal Tokyo 2026 · Base Sepolia · testnet USDC
+
+![GuardPay dashboard](docs/dashboard.png)
 
 ## Team
 
@@ -11,86 +13,206 @@ Built at ETHGlobal Tokyo. Testnet USDC on Base Sepolia.
 | _TODO_ | | @ |
 | _TODO_ | | @ |
 
+---
+
+## The problem
+
+Companies are starting to let AI agents move money: paying suppliers, subscriptions and APIs. x402 makes that easy: any HTTP endpoint can say *"402: pay me 2 USDC"*, and an agent can pay it in one request.
+
+That's also the attack surface:
+- **Payout-address swaps:** a supplier's payout address is quietly replaced with an attacker's wallet.
+- **Fake invoices:** an invoice that looks like it came from a real supplier.
+- **Sanctioned wallets:** money sent to an address that's legally off-limits.
+- **Agent compromise:** a prompt-injected or compromised agent signs whatever it's told.
+
+An agent that pays everything automatically is a liability. An agent that asks a human about everything is useless.
+
+## The solution
+
+GuardPay applies graduated trust to every payment:
+
+| Situation | What GuardPay does |
+| --- | --- |
+| Small invoice, clean supplier | **Pays by itself** in seconds |
+| Payee is a scammer or sanctioned wallet | **Refuses**: the signed payment is never sent |
+| Large invoice, or anything suspicious | **Pauses** and asks a real, Orb-verified human via World ID |
+| Human denies, approval expires, or it's cancelled | **Not paid** |
+
+Every decision is recorded with its verdict, its reason, the human approval (if any) and the on-chain transaction.
+
+---
+
 ## How it works
 
+### End to end
+
+```mermaid
+flowchart LR
+    subgraph SUP["Supplier"]
+        S1["Issues invoice<br/>InvoiceToken.issue(payer, payTo, amount, due)"]
+        SE["x402 payment endpoint<br/>POST /invoices/:id/pay"]
+    end
+
+    subgraph CHAIN["Base Sepolia"]
+        NFT[("Invoice NFT<br/>minted to supplier")]
+        USDC[("USDC<br/>transferWithAuthorization")]
+    end
+
+    subgraph AGENT["GuardPay treasury agent"]
+        L["Listener<br/>InvoiceIssued where payer = us"]
+        Q["Get x402 quote<br/>(402 Payment Required)"]
+        SG["Sign EIP-3009 authorization<br/>(kept in memory)"]
+        SC["Screening"]
+        P{"Policy engine"}
+        X["Send x402 payment"]
+        M["markPaid(id, txHash)"]
+        LOG["Decision log<br/>+ live dashboard"]
+    end
+
+    subgraph INT["Intercepta API"]
+        I1["Address scan<br/>quick-scan / toxic-score"]
+        I2["Token scan"]
+        I3["Signature scan"]
+    end
+
+    subgraph WORLD["World ID for Agents"]
+        W1["Approval request<br/>(device authorization)"]
+        W2["Treasurer approves<br/>in World App"]
+        W3["id_token validated<br/>on the backend"]
+    end
+
+    FAC["x402 facilitator"]
+
+    S1 --> NFT
+    NFT -- "InvoiceIssued event" --> L
+    L --> Q
+    Q -- "POST (no payment)" --> SE
+    SE -- "402: pay X USDC to payTo" --> Q
+    Q --> SG --> SC
+    SC <--> I1 & I2 & I3
+    SC --> P
+    P -- "REFUSE" --> LOG
+    P -- "PAY / CAP" --> X
+    P -- "ESCALATE" --> W1 --> W2 --> W3
+    W3 -- "approved + valid" --> X
+    W3 -- "denied / expired / cancelled / invalid" --> LOG
+    X -- "POST + PAYMENT-SIGNATURE" --> SE
+    SE -- "verify + settle" --> FAC --> USDC
+    SE -- "200 + tx hash" --> X
+    X --> M --> NFT
+    M --> LOG
 ```
- invoice NFT (InvoiceToken)                                         dashboard (web/)
-        │                                                                 ▲
-        ▼                                                                 │ decision log
- ┌───────────┐  402 quote   ┌────────────────────┐   verdict   ┌──────────┴─┐
- │  seller   │─────────────▶│ agent: sign EIP-3009│────────────▶│   policy   │
- │ x402 POST │              │ authorization (kept │  Intercepta │  engine    │
- │ /invoices │◀─────────────│ in memory)          │  screening  └──┬───┬───┬─┘
- │ /:id/pay  │  paid retry  └────────────────────┘                │   │   │
- └───────────┘      ▲                                    PAY / CAP│   │   │REFUSE → never sent
-                    │                                             │   │ESCALATE
-                    │         World ID for Agents: device-code    │   ▼
-                    └──────── approval, id_token verified on ─────┴── human
-                              the backend (JWKS, acr=orb, fresh,      (World App)
-                              single-use, bound to this payment)
+
+### One invoice, step by step
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Sup as Supplier
+    participant NFT as InvoiceToken (Base)
+    participant Ag as GuardPay agent
+    participant Sel as Supplier x402 endpoint
+    participant Int as Intercepta
+    participant WID as World ID for Agents
+    participant Hum as Treasurer (World App)
+    participant Fac as x402 facilitator
+
+    Sup->>NFT: issue(payer = our company, payTo, 2.00 USDC, due)
+    NFT-->>Ag: event InvoiceIssued(id, issuer, payer, payTo, amount)
+    Ag->>Sel: POST /invoices/12/pay
+    Sel->>NFT: getInvoice(12)
+    Sel-->>Ag: 402 Payment Required (2 USDC → payTo, Base Sepolia)
+    Ag->>Ag: sign EIP-3009 TransferWithAuthorization (not sent)
+    par screen everything before anything leaves
+        Ag->>Int: quick-scan payTo (+ deep scan if flagged)
+        Ag->>Int: token risk (USDC)
+        Ag->>Int: scan-message (the signed authorization)
+    end
+    Int-->>Ag: verdicts → CLEAN / CAUTION / HOLD / BLOCK
+    Ag->>Ag: policy → PAY / CAP / ESCALATE / REFUSE
+    alt ESCALATE (over the limit or on hold)
+        Ag->>WID: device authorization (bound to this payment)
+        WID->>Hum: "Approve 2.00 USDC to 0x5A0b… for invoice #12?"
+        Hum-->>WID: approve (or deny / let it expire)
+        Ag->>WID: poll token endpoint
+        WID-->>Ag: id_token (RS256)
+        Ag->>Ag: validate: JWKS signature, iss, aud, exp, acr = orb,<br/>fresh auth_time, single-use jti, bound to this intent
+        Ag->>Ag: sign a fresh authorization, re-screen it
+    end
+    Ag->>Sel: POST /invoices/12/pay + PAYMENT-SIGNATURE
+    Sel->>Fac: verify + settle
+    Fac->>NFT: (USDC) transferWithAuthorization → supplier
+    Sel-->>Ag: 200 OK + PAYMENT-RESPONSE (tx hash)
+    Ag->>NFT: markPaid(12, txHash)
 ```
 
-For every invoice, the agent ([agent/src/agent.ts](agent/src/agent.ts)):
+### Decision policy
 
-1. **Quote.** It calls `POST /invoices/:id/pay` on the seller and gets back a **402 Payment Required**. The payTo (the supplier), the asset (USDC) and the amount all come from the InvoiceToken.
-2. **Sign.** It builds the exact EIP-3009 `TransferWithAuthorization` that x402 would send. The signed payload stays in memory; nothing goes to the seller yet.
-3. **Screen with Intercepta.** Three live calls run in parallel. Each returns a verdict of `CLEAN`, `CAUTION`, `HOLD` or `BLOCK`:
-   - the **payTo address** (quick-scan, plus a deep scan if anything turns up)
-   - the **token**
-   - the **payment authorization itself** (scan-message on the EIP-712 payload)
-4. **Policy** ([agent/src/policy.ts](agent/src/policy.ts)):
+```mermaid
+flowchart TD
+    A["Intercepta verdict<br/>(worst of payTo, token, authorization)"] --> B{Verdict}
+    B -- BLOCK --> R["REFUSE<br/>never paid, no override"]
+    B -- HOLD --> E["ESCALATE<br/>World ID approval"]
+    B -- CAUTION --> C{"amount ≤ cap<br/>(0.10 USDC)?"}
+    C -- yes --> CAP["CAP<br/>pay under reduced limit"]
+    C -- no --> E
+    B -- CLEAN --> D{"amount ≤ auto-pay limit<br/>(1.00 USDC)?"}
+    D -- yes --> PAY["PAY"]
+    D -- no --> E
+    E --> F{"Human approval<br/>validated on backend?"}
+    F -- approved --> PAY2["PAY"]
+    F -- "denied / expired /<br/>cancelled / invalid" --> NP["NOT PAID"]
+```
 
-   | Screening verdict | Amount | Decision |
-   | --- | --- | --- |
-   | `BLOCK` | any | **REFUSE**: never paid, no override |
-   | `HOLD` (flagged, or Intercepta unreachable) | any | **ESCALATE** to World ID |
-   | `CAUTION` | ≤ `CAP_LIMIT_USDC` | **CAP**: auto-pay under the reduced cap |
-   | `CAUTION` | > cap | **ESCALATE** |
-   | `CLEAN` | ≤ `AUTO_PAY_LIMIT_USDC` | **PAY** |
-   | `CLEAN` | > limit | **ESCALATE** |
+**How the screening verdicts are set:**
 
-5. **Escalate.** The agent requests a fresh human approval through World ID for Agents and waits.
-   - It pays only if the id_token passes backend validation.
-   - A **denied**, **expired**, **cancelled** or **invalid** approval means the payment is **not made**.
-   - After approval, the agent signs a fresh authorization and screens it again.
-6. **Execute.** It sends the x402 payment. The facilitator settles on Base Sepolia, and then the agent calls `InvoiceToken.markPaid(id, txHash)`.
-7. **Log.** Every decision is recorded with its verdict, reasons, approval claims and tx hash, and appears on the dashboard.
+| Check | BLOCK | HOLD | CAUTION | CLEAN |
+| --- | --- | --- | --- | --- |
+| **payTo address** (quick-scan, then toxic-score if anything is found) | a hard trait: `known_scammer`, `sanction_address`, `blacklist`, `fake_phishing_*`, `rug_pull`…, or toxicScore ≥ 70 | toxicScore ≥ 40 | any other signal | none |
+| **token** | `action=block`, `trust=blocklist` or `riskLevel=high` | – | `action=warn` or `riskLevel=medium` | – |
+| **signed authorization** | riskGroup High, drainer or malicious detectors, or signed `to`/`value` ≠ the screened payTo/amount | riskGroup Medium | – | – |
+| **Intercepta unreachable** | – | **HOLD**: fail closed, a human decides | – | – |
 
-Screening **fails closed**: if Intercepta can't be reached, the verdict is `HOLD`, so a human decides. The agent never auto-pays unscreened.
+### Why the invoice is an NFT
+
+An invoice is a **receivable**: the supplier's right to be paid. The supplier issues it and holds the NFT, so it can also sell it to a financier for early cash (invoice factoring) without changing where the payment goes. The invoice names the **payer**, and only the payer's agent can mark it paid. Payment status and the settlement transaction are public and verifiable.
+
+---
 
 ## Live on Base Sepolia
 
 | | |
 | --- | --- |
-| InvoiceToken | [`0x6a9dCF04aA59C2F7E3B731C75dAC1c5B3c5Cd326`](https://sepolia.basescan.org/address/0x6a9dCF04aA59C2F7E3B731C75dAC1c5B3c5Cd326) |
-| Agent wallet | [`0x982BBcD31e83bF2c80E7EBe02C95245a08ab83e6`](https://sepolia.basescan.org/address/0x982BBcD31e83bF2c80E7EBe02C95245a08ab83e6) |
-| Clean supplier | [`0x5A0b66f4a0B21B1bf0f8A7413451E628606A9Cfc`](https://sepolia.basescan.org/address/0x5A0b66f4a0B21B1bf0f8A7413451E628606A9Cfc) |
+| InvoiceToken | [`0x528E823E4Bc38ea662eA53b91f311394C9D33922`](https://sepolia.basescan.org/address/0x528E823E4Bc38ea662eA53b91f311394C9D33922) |
+| Treasury (payer) agent | [`0x982BBcD31e83bF2c80E7EBe02C95245a08ab83e6`](https://sepolia.basescan.org/address/0x982BBcD31e83bF2c80E7EBe02C95245a08ab83e6) |
+| Supplier | [`0x5A0b66f4a0B21B1bf0f8A7413451E628606A9Cfc`](https://sepolia.basescan.org/address/0x5A0b66f4a0B21B1bf0f8A7413451E628606A9Cfc) |
 
-This is a full run of `npm run demo`: live Intercepta, x402 settlement through the x402.org facilitator, and `markPaid` on the InvoiceToken.
+In every run, the supplier issued the invoice on-chain, the agent picked it up from the `InvoiceIssued` event, and the screening used the live Intercepta API.
 
-| # | Invoice | Intercepta | Decision | World ID | Outcome |
-| --- | --- | --- | --- | --- | --- |
-| 1 | #10, $0.05 → clean supplier | CLEAN | PAY | – | **PAID**: [x402 settlement](https://sepolia.basescan.org/tx/0x6c7c1d5fb48d79dbde46e2820bbc531d756862a15cc6cd7f91208a670f76c643), [markPaid](https://sepolia.basescan.org/tx/0xab59a2b57f2b4dd555bda3586f457490d0782d0aa0159e158e3db26a77b31964) |
-| 2 | #11, $0.05 → Ronin exploiter | BLOCK (toxicScore 100: `known_scammer`, `sanction_address`, `blacklist`, `fake_phishing_transfer`) | REFUSE | – | **REFUSED**: nothing sent, invoice still unpaid |
-| 3 | #12, $2.00 → clean supplier | CLEAN | ESCALATE (> $1 limit) | approved and verified | **PAID**: [x402 settlement](https://sepolia.basescan.org/tx/0x2482d5633d7f75ebd6f359e11fc8ed01cc6b6e3824ff0509c1ca3bfa2e5201bc), [markPaid](https://sepolia.basescan.org/tx/0x99a205dd7f0e2d5ac65dea746b8009585567c8c2a184aaeb8c1ff88d4cd71ba5) |
-| 4 | #13, $2.00 → clean supplier | CLEAN | ESCALATE | denied | **NOT PAID** |
-| 4b | #14, $2.00 → clean supplier | CLEAN | ESCALATE | expired (8s) | **NOT PAID** |
+| # | Scenario | Intercepta | Decision | World ID | Outcome | Transactions |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | $0.05, clean supplier | CLEAN | PAY | – | **PAID** | [issue](https://sepolia.basescan.org/tx/0xe701e54d1decddcfed03069a254dd97d5e11de055a210146787961e41c973549) · [USDC](https://sepolia.basescan.org/tx/0x9c47ff29d1d766f0c9b362c1ef969f912647e07fa5ef7ad0fb00fdbcd47c02e7) · [markPaid](https://sepolia.basescan.org/tx/0x40821286e02f178d1c2b6aa46845cc1aa7149a3c4503a399306b55863e0d4558) |
+| 2 | $0.05, payout swapped to a sanctioned wallet (Ronin exploiter) | **BLOCK**: toxicScore 100, `known_scammer`, `sanction_address`, `blacklist`, `fake_phishing_transfer` | REFUSE | – | **REFUSED**: nothing sent | [issue](https://sepolia.basescan.org/tx/0x7dc6d5f7e8f14e0810c3909350dfdfd637be0f7a5d126e518acff75a432232df) |
+| 3 | $2.00, clean supplier | CLEAN | ESCALATE (> $1) | approved and validated | **PAID** | [issue](https://sepolia.basescan.org/tx/0x38753d7109ebd0ff0c46b99437352f24737d300cffc734c333ecd5e6ef1dacf2) · [USDC](https://sepolia.basescan.org/tx/0x2d2ea2858076760ff61ff818ce5e2636635581a1ec58db6d4d874fe5d9d890d3) · [markPaid](https://sepolia.basescan.org/tx/0x8070ad6cde58d4be1b4ba5adbd5fd0217f187cd8666c3faaff3ce2b467e33ae2) |
+| 4 | $2.00, human denies | CLEAN | ESCALATE | denied | **NOT PAID** | [issue](https://sepolia.basescan.org/tx/0x26bfc61edb09658b78f73c9a6471ceec66a6accffed2a390b23632121f5ed680) |
+| 4b | $2.00, approval expires | CLEAN | ESCALATE | expired | **NOT PAID** | [issue](https://sepolia.basescan.org/tx/0x2447772255c9a50801622c3bcf818aa19bc7371743dcc671465063baa015cef1) |
+
+---
 
 ## Repo layout
 
 | Path | What |
 | --- | --- |
-| [contracts/src/InvoiceToken.sol](contracts/src/InvoiceToken.sol) | ERC-721 invoice (supplier, amount, dueDate, paid, paymentRef). `markPaid` is agent-only |
-| [contracts/script/Deploy.s.sol](contracts/script/Deploy.s.sol) | Deploys the contract and issues the 4 demo invoices |
-| [seller/src/server.ts](seller/src/server.ts) | Express x402 resource server. `POST /invoices/:id/pay` is priced per invoice |
-| [agent/src/x402.ts](agent/src/x402.ts) | x402 buyer, split into quote → sign → submit |
+| [contracts/src/InvoiceToken.sol](contracts/src/InvoiceToken.sol) | ERC-721 receivable: issuer, payer, payTo, amount, dueDate, paid, paymentRef. Suppliers issue; only the payer can `markPaid` |
+| [seller/src/server.ts](seller/src/server.ts) | The supplier's x402 endpoint. `POST /invoices/:id/pay` is priced and routed per invoice, read from the chain |
+| [agent/src/listener.ts](agent/src/listener.ts) | Watches `InvoiceIssued` events addressed to our company |
+| [agent/src/agent.ts](agent/src/agent.ts) | The agent loop: quote → sign → screen → policy → approval → pay → markPaid → log |
+| [agent/src/x402.ts](agent/src/x402.ts) | x402 buyer split into quote / sign / submit, so the exact authorization can be screened first |
 | [agent/src/intercepta.ts](agent/src/intercepta.ts) | Intercepta screening pipeline and verdict mapping |
-| [agent/src/policy.ts](agent/src/policy.ts) | Policy engine: PAY / REFUSE / CAP / ESCALATE |
-| [agent/src/worldid.ts](agent/src/worldid.ts) | World ID for Agents: device-code approval and backend token validation |
-| [agent/src/mock-world.ts](agent/src/mock-world.ts) | Mock World issuer (same protocol, real RS256 tokens) for `WORLD_MODE=mock` |
-| [agent/src/agent.ts](agent/src/agent.ts) | The agent loop |
-| [agent/src/server.ts](agent/src/server.ts) | Dashboard API. Secrets stay server-side |
-| [web/](web/) | Vite/React dashboard |
+| [agent/src/policy.ts](agent/src/policy.ts) | Policy engine |
+| [agent/src/worldid.ts](agent/src/worldid.ts) | World ID for Agents: approval request, polling, backend token validation, intent binding |
+| [agent/src/server.ts](agent/src/server.ts) | Agent API for the dashboard. All secrets stay server-side |
+| [web/](web/) | Live dashboard (Vite + React) |
 
 ## Setup
 
@@ -98,163 +220,217 @@ Requirements: Node 20+, Foundry.
 
 ```bash
 npm install
-npm run contracts:install      # forge-std + OpenZeppelin into contracts/lib
-cp .env.example .env           # then fill it in (see below)
+npm run contracts:install   # forge-std + OpenZeppelin
+cp .env.example .env
 ```
 
-Minimum `.env` for the demo:
+Fill in `.env`:
 
-- `AGENT_PRIVATE_KEY`: a Base Sepolia wallet funded with testnet USDC from [faucet.circle.com](https://faucet.circle.com). Add a little ETH if you deploy the contract, to pay for `markPaid` gas.
-- `CLEAN_SUPPLIER_ADDRESS`: any address you control. It receives the USDC.
-- `RISKY_SUPPLIER_ADDRESS`: a known-risky **mainnet** address. It defaults to the Ronin bridge exploiter (OFAC-sanctioned, toxicScore 100 in Intercepta); see [shared/src/config.ts](shared/src/config.ts).
-- `INTERCEPTA_API_KEY`: without it, every payment fails closed to ESCALATE.
-- `WORLD_MODE=mock` (the default). Or `oidc` with `WORLD_CLIENT_ID` and `WORLD_CLIENT_SECRET` from a registered sandbox app.
+| Variable | What |
+| --- | --- |
+| `AGENT_PRIVATE_KEY` | Treasury agent wallet on Base Sepolia. Fund it with USDC ([faucet.circle.com](https://faucet.circle.com)) and a little ETH for `markPaid` |
+| `DEPLOYER_PRIVATE_KEY` | Deploys the InvoiceToken (it can be the same key) |
+| `CLEAN_SUPPLIER_ADDRESS` / `SUPPLIER_PRIVATE_KEY` | Supplier wallet. It issues invoices, so it needs a little ETH, and it receives the USDC |
+| `RISKY_SUPPLIER_ADDRESS` | A known-risky mainnet address used in scenario 2. The default is the Ronin exploiter (OFAC-sanctioned) |
+| `INTERCEPTA_API_KEY` | Intercepta / Web3 Antivirus API key |
+| `WORLD_MODE`, `WORLD_CLIENT_ID`, `WORLD_CLIENT_SECRET` | `oidc` plus sandbox client credentials from the [World ID for Agents portal](https://sandbox.auth.world.org/portal). `mock` runs a protocol-identical issuer for offline development |
 
-Optionally, deploy the InvoiceToken. Without it, the seller uses a local registry with the same four invoices.
+Then deploy the contract:
 
 ```bash
-npm run deploy                 # prints INVOICE_TOKEN_ADDRESS=0x… → put it in .env
+npm run deploy              # prints INVOICE_TOKEN_ADDRESS=0x… → add it to .env
 ```
-
-With the token deployed, each dashboard run issues a fresh invoice NFT and marks it paid on-chain.
 
 ## Run
 
-Use three terminals:
-
 ```bash
-npm run seller   # x402 seller    http://localhost:4021
-npm run agent    # agent API      http://localhost:4000 (+ mock World issuer at /mock-world)
-npm run web      # dashboard      http://localhost:5173
+npm run seller   # supplier x402 endpoint     :4021
+npm run agent    # treasury agent + listener   :4000
+npm run web      # live dashboard              :5173
 ```
 
-In the dashboard, you have two ways to run things:
+In the dashboard's **Supplier console**, each button makes the supplier issue a real invoice on Base Sepolia. The agent picks it up from the chain, and the pipeline shows each stage as it happens. Tick **"I'm the treasurer"** to approve or deny in the World App card yourself. Click any row in the decision log to replay that run.
 
-- **Run demo** runs all scenarios with a simulated human.
-- Tick **"I'll be the human approver"** to click Approve or Deny yourself in the World App card.
-
-Each scenario also has its own **Run** button.
-
-Headless: with the seller running, `npm run demo` runs every scenario and prints a summary.
-
-### Demo scenarios
-
-| # | Invoice | Expected |
-| --- | --- | --- |
-| 1 | $0.05 to a clean supplier | Intercepta CLEAN → **PAY** (tx hash logged) |
-| 2 | $0.05 to a known-risky mainnet payTo | Intercepta BLOCK → **REFUSE**, reason shown, nothing sent |
-| 3 | $2.00 to a clean supplier | over the $1 limit → **ESCALATE** → World ID approve → **PAY** |
-| 4 | $2.00 to a clean supplier | **ESCALATE** → human denies → **NOT PAID** |
-| 4b | $2.00 to a clean supplier | **ESCALATE** → approval expires after 8s → **NOT PAID** |
+Headless: `npm run demo` runs every scenario and prints a summary.
 
 ## Test
 
 ```bash
-npm test          # forge tests (InvoiceToken) + agent tests (policy, verdicts, World ID validation)
+npm test          # Foundry (InvoiceToken) + agent tests (policy, verdicts, integrity check, World ID validation)
 npm run typecheck
-npm run screen -w agent -- 0xSomeMainnetAddress   # one live Intercepta screening, printed as JSON
-npx tsx agent/src/pay.ts 1                        # raw x402 payment of invoice #1, no GuardPay checks
+npm run screen -w agent -- 0xAnyMainnetAddress   # one live Intercepta screening
 ```
 
-The World ID tests cover approve, deny, expire and cancel. They also check that the backend rejects a **replayed** token, a **stale** session, a **forged** token (bad signature), a **wrong audience**, and an approval reused for a **different payment**.
+The World ID tests cover approve, deny, expire and cancel. They also check that the backend rejects **replayed**, **stale**, **forged** and **wrong-audience** tokens, and an approval reused for a **different payment**.
 
 ---
 
 ## Intercepta: Safe Agent-to-Agent Payments with x402
 
-All calls are live (`https://api.web3antivirus.io`, `X-API-KEY` header). There are no mocks.
+Every payment is screened **before the agent's signed x402 authorization leaves the process**. All calls are live (`https://api.web3antivirus.io`, `X-API-KEY`).
 
-| What | Endpoint | Where |
+| What | Endpoint | Code |
 | --- | --- | --- |
-| HTTP client (auth, timeout, rate-limit spacing + 429 retry) | – | [agent/src/intercepta.ts:46-75](agent/src/intercepta.ts#L46-L75) |
+| HTTP client (auth, timeout, rate-limit spacing, 429 retry) | – | [agent/src/intercepta.ts:46-75](agent/src/intercepta.ts#L46-L75) |
 | payTo quick scan | `GET /api/public/v2/extension/account/{address}/quick-scan` | [agent/src/intercepta.ts:108](agent/src/intercepta.ts#L108) |
 | payTo deep scan (if the quick scan finds anything) | `GET /api/public/v2/extension/account/{address}/toxic-score` | [agent/src/intercepta.ts:113](agent/src/intercepta.ts#L113) |
 | token scan | `GET /api/public/v2/extension/token-intelligence/token/{address}/risks` | [agent/src/intercepta.ts:148](agent/src/intercepta.ts#L148) |
-| payment authorization (EIP-712) | `POST /api/public/v2/extension/analysis/signature` | [agent/src/intercepta.ts:223](agent/src/intercepta.ts#L223) |
-| authorization integrity (signed `to`/`value` must equal the screened payTo/amount) | local | [agent/src/intercepta.ts:210](agent/src/intercepta.ts#L210) |
+| signed x402 authorization (EIP-712) | `POST /api/public/v2/extension/analysis/signature` | [agent/src/intercepta.ts:223](agent/src/intercepta.ts#L223) |
+| authorization integrity (signed `to`/`value` = screened payTo/amount) | – | [agent/src/intercepta.ts:210](agent/src/intercepta.ts#L210) |
 | pipeline entry | `screenPayment()` | [agent/src/intercepta.ts:251](agent/src/intercepta.ts#L251) |
-| called from the agent loop, before any payment is sent | | [agent/src/agent.ts:54](agent/src/agent.ts#L54) (and a re-screen after approval at [:77](agent/src/agent.ts#L77)) |
-| verdict → decision | `decide()` | [agent/src/policy.ts:27](agent/src/policy.ts#L27), called at [agent/src/agent.ts:58](agent/src/agent.ts#L58) |
+| called before paying, and again after human approval | – | [agent/src/agent.ts:63](agent/src/agent.ts#L63), [agent/src/agent.ts:86](agent/src/agent.ts#L86) |
+| verdict → decision | `decide()` | [agent/src/policy.ts:27](agent/src/policy.ts#L27), called at [agent/src/agent.ts:67](agent/src/agent.ts#L67) |
 
-**Mainnet data, testnet payment.** Intercepta has no Base Sepolia data, so GuardPay handles the two sides differently:
+**Visible verdicts.** Blocked and approved payments show up in the dashboard and in the table above, with Intercepta's own traits as the reason.
 
-- It screens the **real payTo address** unchanged.
-- It maps the testnet asset and the EIP-712 domain to their **Base mainnet** equivalents: testnet USDC becomes `0x8335…2913`, with chainId 8453.
-
-**Live results** (`npm run screen -w agent -- <address>`):
-
-| payTo | payTo check | token check | authorization check | Verdict |
-| --- | --- | --- | --- | --- |
-| `0x098B…2F96` (Ronin exploiter, OFAC) | BLOCK: toxicScore 100, `known_scammer`, `sanction_address`, `blacklist`, `fake_phishing_transfer` | CLEAN: USDC whitelisted | riskGroup Low | **BLOCK → REFUSE** |
-| `0xd8dA…6045` (vitalik.eth) | CLEAN: toxicScore 0 | CLEAN | riskGroup Low | **CLEAN → PAY** |
+**Mainnet intelligence, testnet settlement.** Intercepta's data is mainnet, so GuardPay handles the two sides differently:
+- It screens the real payTo address unchanged.
+- It maps the testnet asset and the EIP-712 domain to their Base mainnet equivalents: USDC `0x8335…2913`, chainId 8453.
 
 **API feedback:**
-
-- The per-endpoint OpenAPI specs, and the `.md` versions of the docs, made the integration quick. An agent can read them directly. Address and token scans returned clear, actionable results within about 1s.
-- **`scan-message` doesn't decode EIP-3009 `TransferWithAuthorization`**, which is the exact thing x402 signs. It returns `messageType: null`, `domain` fields null, no addresses and riskGroup `Low`, even when `to` is a sanctioned address. We cover this with the payTo scan plus a local check that the signed `to` and `value` match the screened payTo and amount. Native x402/EIP-3009 support would make this endpoint the natural single check.
-- The API key is rate-limited per second, so three parallel calls hit **HTTP 429**. We space requests 400ms apart and retry. Documenting the limit, or adding a `Retry-After` header, would help.
-- `quick-scan` returns **404** for contract addresses ("An Externally Owned Account with this address doesn't exist"). A payTo can legitimately be a contract, such as a smart wallet or a splitter, so a verdict for contracts would help. We fail closed to human approval.
-- The `toxicScore` scale isn't documented; from live data it appears to be 0–100. A recommended action, like the `action: block|warn` on token scans, would remove guesswork from our thresholds (≥70 BLOCK, ≥40 HOLD, >0 CAUTION). `scan-message` also takes `message` as a JSON **string**, and its `chainId` enum has no testnets.
+- The per-endpoint OpenAPI specs, and the `.md` versions of the docs, made the integration fast. An agent can read them directly. Address and token scans returned clear, actionable results within about 1s.
+- **`scan-message` doesn't decode EIP-3009 `TransferWithAuthorization`**, which is the exact thing x402 signs. It returns `messageType: null`, no addresses and riskGroup `Low`, even when `to` is a sanctioned address. We cover this with the payTo scan plus a local check that the signed `to` and `value` match the screened quote. Native x402 support would make this the one-call safety check for agent payments.
+- The API key is rate-limited per second, so three parallel calls returned **HTTP 429**. We space requests out and retry. Documenting the limit, or adding a `Retry-After` header, would help.
+- `quick-scan` returns **404** for contract addresses. A payTo can legitimately be a smart wallet or a splitter, so a verdict for contracts would help. We fail closed to human approval.
+- The `toxicScore` scale isn't documented; from live data it appears to be 0–100. A recommended action, like `action: block|warn` on token scans, would remove guesswork from integrators' thresholds.
 
 ## World: Best Use of World ID for Agents
 
-GuardPay uses World ID for Agents as a **step-up approval** for money movement.
+**The protected action:** releasing company money. A payment above the auto-pay limit, or one Intercepta puts on hold, executes **only** after a fresh approval from an Orb-verified human through World ID for Agents. That approval is validated on GuardPay's backend.
 
-- **The flow is the OIDC Device Authorization Grant.** World ID for Agents lists it for "confidential-client device login with explicit human approval". The agent is headless, so a redirect flow doesn't fit.
-- **Mock mode (the default)** mocks only the proof. [agent/src/mock-world.ts](agent/src/mock-world.ts) is a local issuer that implements the same discovery, `device_authorization`, `token` and JWKS endpoints as `sandbox.auth.world.org`, and signs real RS256 id_tokens.
-- **The backend validation is identical in both modes.**
-- **Real mode:** set `WORLD_MODE=oidc` with a registered sandbox client.
+| Journey step | Implementation |
+| --- | --- |
+| Verification request | OIDC device authorization grant to the World ID for Agents issuer. It carries a human-readable description of the exact payment: [worldid.ts:132](agent/src/worldid.ts#L132) |
+| User completion | The treasurer approves (or denies) in World App. The dashboard shows the pending request with its countdown |
+| Validated result | Backend validation of the id_token, covering the JWKS signature, `iss`, `aud`, `exp`, `acr = orb-v3`, a fresh `auth_time`, a single-use `jti` and an optional approver allowlist: [worldid.ts:231](agent/src/worldid.ts#L231) |
+| Protected agent action | x402 payment and `markPaid`. The approval is consumed once and only for the matching intent hash (invoice, payTo, asset, amount, network): [worldid.ts:266](agent/src/worldid.ts#L266), [agent.ts:77-82](agent/src/agent.ts#L77-L82) |
+| Unsuccessful paths | **Denied**, **expired**, **cancelled** (by the operator) and **invalid** (the token fails validation) all end as **NOT PAID**. Scenarios 4 and 4b are shown live above |
 
-**Backend validation** ([agent/src/worldid.ts:231](agent/src/worldid.ts#L231)). An approval counts only if every check passes:
-
-- JWKS signature (RS256) from the issuer's `jwks_uri`, `iss`, `aud` = this agent's client, and `exp`
-- `acr = https://world.org/oidc/acr/orb-v3`: an Orb-verified human
-- **freshness**: `auth_time` must be after this approval request, which rules out a reused earlier session, and within `WORLD_MAX_AUTH_AGE_SECONDS`
-- **single use**: a `jti` replay cache. Each approval is consumed once and is bound to one payment intent: a hash of the invoice, payTo, asset, amount and network ([consumeApproval, :266](agent/src/worldid.ts#L266))
-- optional `WORLD_APPROVER_SUBS`, an allowlist of pairwise subjects for authorized treasurers
-
-Where it's called: the request is at [worldid.ts:132](agent/src/worldid.ts#L132), polling and the deny, expire and cancel handling at [:181](agent/src/worldid.ts#L181), and the use in the agent loop at [agent/src/agent.ts:68-73](agent/src/agent.ts#L68-L73).
+No client secret reaches the browser. The dashboard can relay the human's action or cancel a request, but it can never mark anything approved.
 
 ### Why human approval is the minimum sufficient trust for large payments
 
-**Screening can't answer whether the payment was intended.** Intercepta can tell the agent that a payTo is *not known to be bad*. It can't tell it that *this* $2,000 invoice is legitimate. A clean-looking address can still belong to an invoice-fraud scheme, a compromised supplier account or a prompt-injected agent.
+**Screening can't answer whether a payment was intended.** Intercepta tells the agent a payee is *not known to be bad*. It can't tell the agent that *this* invoice is legitimate. A clean-looking address can still belong to invoice fraud, a compromised supplier or a prompt-injected agent.
 
-**Weaker controls fail against the threats that matter.**
+**Weaker controls fail against those threats.**
 - **More automated checks** can be fooled by the same attacker who fooled the agent.
 - **An API key or a second agent** can be stolen or prompt-injected along with the first one.
-- **A long-lived session** doesn't prove that anyone looked at *this* payment.
+- **A long-lived session** doesn't show that anyone looked at *this* payment.
 
-**The minimum that closes the gap is one real, unique human**, freshly authenticated, who explicitly approves exactly this payment within a short window. World ID provides that without KYC or identity data: we learn only that an Orb-verified person approved, under a pairwise subject.
+**The minimum that closes the gap is one real, unique human**, freshly authenticated, explicitly approving exactly this payment within a short window. World ID provides that without KYC or personal data: GuardPay learns only that an Orb-verified person approved, under a pairwise identifier.
 
-**Anything more would be overkill here.** Multi-sig quorums or KYC would add friction without addressing a threat this flow faces.
+**Anything more would be friction without a matching threat.** Multisig quorums or KYC fall in this category.
 
 **Anything less** (no approval, a cached session, or a replayable token) leaves the agent as a single point of failure.
 
-**The cost stays low.** Small, clean payments stay fully autonomous, so humans only see the few payments that need them.
+**The cost stays low.** Small, clean payments remain fully autonomous, so humans only see the payments that need them.
 
-### Debrief
+### Integration debrief
 
-- **Time to first success.** About 5 minutes from starting `worldid.ts` to the first backend-verified approval, in mock mode against our local issuer. We haven't yet run the real sandbox issuer end to end, because registering an app needs the plugin and portal sign-in. The client code is the same, so it's configuration only.
-- **Friction.** `sandbox.auth.world.org/docs` is conceptual. We found the concrete endpoints (device authorization, token, JWKS, `acr` values) by reading `/.well-known/openid-configuration`. The agent plugin is for a *coding* agent to register apps, not a runtime SDK for an autonomous agent. Callback URLs must be HTTPS, which rules out localhost redirect flows during a hackathon.
-- **Missing docs.**
-  - An end-to-end device-flow example: which errors to expect (`authorization_pending`, `access_denied`, `expired_token`), the default `expires_in` and `interval`, and a sample id_token.
-  - How to **bind an approval to a specific action**, such as a transaction summary shown in World App (CIBA `binding_message` or RAR `authorization_details`).
-  - Whether `auth_time` is guaranteed fresh on every device-flow approval.
-- **Top improvement.** First-class *action-bound approvals*: the agent sends a human-readable, hash-bound description of the action ("Pay 2,000 USDC to 0xabc… for invoice #3"), World App displays it, and the id_token includes that hash. Today the binding is enforced server-side by GuardPay. Having it in the token would make "this human approved this exact payment" verifiable by anyone.
+- **Time to first success:** about 5 minutes from starting `worldid.ts` to the first backend-validated approval. The client is standard OIDC: discovery, device authorization, token polling and JWKS.
+- **Friction:**
+  - `sandbox.auth.world.org/docs` is conceptual. We found the concrete endpoints (device authorization, token, JWKS, `acr` values) by reading `/.well-known/openid-configuration`.
+  - The agent plugin helps a *coding* agent register apps; it isn't a runtime SDK for an autonomous agent.
+  - Callback URLs must be HTTPS, so redirect flows don't work on localhost during a hackathon. The device grant avoids that.
+- **Missing documentation:**
+  - An end-to-end device-flow example: the expected errors (`authorization_pending`, `access_denied`, `expired_token`), the default `expires_in` and `interval`, and a sample id_token.
+  - Whether `auth_time` is guaranteed fresh for every device approval.
+  - How to bind an approval to a specific action.
+- **The one improvement with the greatest impact:** first-class **action-bound approvals**. The agent would send a hash-bound, human-readable description of the action ("Pay 2.00 USDC to 0x5A0b… for invoice #12"), World App would display it, and the id_token would carry that hash. Today GuardPay enforces the binding server-side. In the token, "this human approved this exact action" would be verifiable by anyone.
 
-## Curvegrid: Best AI Agent Project
+## Curvegrid
 
-**GuardPay is an autonomous treasury agent with guardrails:**
+**MultiBaas was not used.** The contract is deployed with Foundry, and the agent reads the chain and listens for events directly with viem.
 
-- It quotes, screens, decides and pays by itself.
-- It stops for a human only when policy requires it.
-- It records every decision with an auditable reason.
-- It settles tokenized invoices on-chain.
+---
 
-**MultiBaas: not used.** The contract is deployed with Foundry, and the agent talks to the chain directly with viem.
+## FAQ
+
+**What is GuardPay in one sentence?**
+An autonomous treasury agent that pays supplier invoices over x402, screens every payment with Intercepta first, and needs a World ID-verified human for large or risky ones.
+
+**What problem does it solve?**
+Agents that move money are a new attack surface: swapped payout addresses, fake invoices, sanctioned wallets, compromised agents. GuardPay lets small, clean payments run without a human, blocks the dangerous ones, and brings in a verified human only when it matters.
+
+**Who does what?**
+- The **supplier** issues an invoice NFT on-chain and runs an x402 payment endpoint.
+- The **agent** listens for invoices addressed to its company, screens them, decides, and pays.
+- **Intercepta** supplies the risk intelligence.
+- **World ID** supplies the verified human approval.
+- The **x402 facilitator** settles the USDC.
+
+**Why x402?**
+It's the emerging standard for agents paying over HTTP: no accounts or API keys, stablecoin settlement and machine-readable prices. The riskiest moment in an agent payment is when the agent signs the x402 authorization, and that's exactly where GuardPay sits.
+
+**How does the x402 payment work?**
+1. The agent calls the invoice's pay endpoint and gets `402` back, with the price and payTo.
+2. It signs an EIP-3009 USDC authorization.
+3. It calls again with the signature attached.
+4. The facilitator verifies the signature, submits `transferWithAuthorization` on-chain and pays the gas.
+5. The endpoint returns the transaction hash.
+
+**What exactly does Intercepta check?**
+Three things, before anything is sent:
+- the **payTo address**: quick-scan, plus a deep scan if anything turns up
+- the **token**
+- the **signed payment authorization**
+
+GuardPay also checks that the signature pays exactly the address and amount that were screened.
+
+**What if Intercepta is down?**
+GuardPay fails closed. The verdict becomes HOLD, so a human decides; it never auto-pays unscreened.
+
+**Can the agent be tricked into paying a different address than the one screened?**
+No. The signed authorization's `to` and `value` must equal the screened quote. The World ID approval is bound to a hash of the invoice, payTo, asset, amount and network. After approval, the agent signs a fresh authorization and re-screens it.
+
+**Why World ID instead of a password, a second agent or a multisig?**
+- A **password** or a **second agent** can be stolen or prompt-injected along with the first agent.
+- **Screening** can't prove a payment was intended.
+- World ID proves that a unique, real human freshly approved this payment, with no KYC and no personal data.
+- A **multisig** adds friction without addressing a different threat.
+
+**Could someone replay an old approval?**
+No. Each token's `jti` is single-use. `auth_time` must come after the request. The approval is consumed once, for one specific payment. The tests cover replayed, stale, forged and wrong-audience tokens.
+
+**What happens if the treasurer doesn't respond?**
+The request expires and the invoice is not paid. The treasurer can also deny, and an operator can cancel. All of those end as NOT PAID.
+
+**What are the limits?**
+Configurable. Currently:
+- **Clean:** up to $1.00 pays automatically.
+- **Minor risk signals (CAUTION):** only up to $0.10.
+- **Everything larger, or on hold:** needs a human.
+- **Blocked:** never paid.
+
+**Why is the invoice an NFT, and why does the supplier hold it?**
+An invoice is a receivable: the supplier's right to be paid. As an NFT the supplier can hold it or sell it for early cash, and the payment status and receipt are public. The payer doesn't need to own it; its agent pays it and marks it paid.
+
+**Who pays gas?**
+- The **supplier** pays gas to issue the invoice.
+- The **x402 facilitator** pays gas for the USDC transfer.
+- The **agent** pays gas for `markPaid`.
+
+**How does the agent know there's a new invoice?**
+It watches the InvoiceToken contract for `InvoiceIssued` events where the payer is its own company, and processes each new invoice automatically.
+
+**How do we know the payment really happened?**
+The x402 settlement transaction hash is returned by the facilitator, logged, and stored on-chain in the invoice's `paymentRef` by `markPaid`. Anyone can check it on Basescan.
+
+**Is this real money?**
+It's testnet USDC on Base Sepolia, but the transactions are real and visible on Basescan. Moving to mainnet means changing the network and the facilitator URL.
+
+**What did you learn about the sponsor APIs?**
+See the Intercepta API feedback and the World integration debrief above. The biggest finding is that Intercepta's signature scan doesn't yet understand EIP-3009, the payload x402 actually signs.
+
+**What would you build next?**
+- On-chain settlement verification in `markPaid`
+- Due-date scheduling with early-payment discounts
+- Per-supplier payment history and anomaly detection
+- Approver allowlists and quorums for very large payments
+- Invoice factoring: selling the invoice NFT for early cash
 
 ## Security notes
 
-- All secrets live in `.env`, which is git-ignored, and are read only by the Node processes. The browser talks to `/api` and never sees a key.
-- World ID results are validated on the server only. The dashboard can't mark anything approved; it can only relay the (mock) human's action to the issuer, or cancel.
+- Secrets live in `.env` (git-ignored) and are read only by the Node processes. The browser talks to `/api` and never sees a key.
+- World ID results are validated on the server only. An unvalidated client response is never treated as authorization.
 - `REFUSE` is final. A signed-but-refused authorization is never sent to the seller.

@@ -3,12 +3,20 @@
   "private": true,
   "version": "0.1.0",
   "description": "Treasury AI agent that screens every x402 invoice payment with Intercepta and escalates large ones to a World ID-verified human.",
-  "workspaces": ["shared", "seller", "agent", "web"],
+  "workspaces": [
+    "shared",
+    "seller",
+    "agent",
+    "web"
+  ],
   "scripts": {
     "seller": "npm run dev -w seller",
     "agent": "npm run dev -w agent",
     "web": "npm run dev -w web",
     "demo": "npm run demo -w agent",
-    "typecheck": "npm run typecheck -w seller && npm run typecheck -w agent"
+    "typecheck": "npm run typecheck -w seller && npm run typecheck -w agent",
+    "test": "cd contracts && forge test && cd .. && npm test -w agent",
+    "deploy": "cd contracts && set -a && . ../.env && set +a && forge script script/Deploy.s.sol --rpc-url base_sepolia --broadcast",
+    "contracts:install": "cd contracts && forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts --no-git"
   }
 }

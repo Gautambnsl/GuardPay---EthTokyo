@@ -8,10 +8,10 @@ Built at ETHGlobal Tokyo 2026 · Base Sepolia · testnet USDC
 
 ## Team
 
-| Name | Role | Handle |
-| --- | --- | --- |
-| _TODO_ | | @ |
-| _TODO_ | | @ |
+| Name | Contact |
+| --- | --- |
+| Gautam Bansal | [@Gautambnsl](https://github.com/Gautambnsl) |
+| Anshul Vats | anshulvatz@gmail.com |
 
 ---
 

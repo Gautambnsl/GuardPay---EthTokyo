@@ -42,19 +42,35 @@ const chainId = () => env("INTERCEPTA_CHAIN_ID", "8453");
 
 class InterceptaError extends Error {}
 
+// The API key is rate limited per second: space requests out and retry 429s with backoff.
+const MIN_SPACING_MS = 400;
+let nextSlot = 0;
+async function slot() {
+  const wait = Math.max(0, nextSlot - Date.now());
+  nextSlot = Math.max(Date.now(), nextSlot) + MIN_SPACING_MS;
+  if (wait) await new Promise((r) => setTimeout(r, wait));
+}
+
 async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
   const key = optionalEnv("INTERCEPTA_API_KEY");
-  // TODO(team): set INTERCEPTA_API_KEY. Without it every check fails closed to HOLD (human approval).
+  // Without a key every check fails closed to HOLD (human approval).
   if (!key) throw new InterceptaError("INTERCEPTA_API_KEY not set");
-  const res = await fetch(`${base()}${path}`, {
-    method,
-    headers: { "X-API-KEY": key, accept: "application/json", ...(body ? { "content-type": "application/json" } : {}) },
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(15_000),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new InterceptaError(`HTTP ${res.status} ${text.slice(0, 200)}`);
-  return JSON.parse(text) as T;
+  for (let attempt = 0; ; attempt++) {
+    await slot();
+    const res = await fetch(`${base()}${path}`, {
+      method,
+      headers: { "X-API-KEY": key, accept: "application/json", ...(body ? { "content-type": "application/json" } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(15_000),
+    });
+    const text = await res.text();
+    if (res.status === 429 && attempt < 3) {
+      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      continue;
+    }
+    if (!res.ok) throw new InterceptaError(`HTTP ${res.status} ${text.slice(0, 200)}`);
+    return JSON.parse(text) as T;
+  }
 }
 
 // ─── Address: quick-scan (+ deep scan when anything shows up) ─────────────────
@@ -140,7 +156,7 @@ async function screenToken(testnetAsset: string): Promise<CheckResult> {
 
 interface SignatureAnalysis {
   riskGroup: "Low" | "Medium" | "High";
-  messageType?: string;
+  messageType?: string | null;
   detectors: { code: string; description: string }[];
   addresses?: { address: string; detectors: string[] }[];
 }
@@ -157,7 +173,9 @@ const MESSAGE_BLOCK_DETECTORS = new Set([
 export function messageVerdict(r: SignatureAnalysis): { verdict: ScreenVerdict; reason: string } {
   const codes = (r.detectors ?? []).map((d) => d.code);
   const hard = codes.filter((c) => MESSAGE_BLOCK_DETECTORS.has(c));
-  const label = `authorization riskGroup=${r.riskGroup}${codes.length ? ` [${codes.join(", ")}]` : ""}`;
+  const label =
+    `authorization riskGroup=${r.riskGroup}${codes.length ? ` [${codes.join(", ")}]` : ""}` +
+    (r.messageType ? "" : " (Intercepta did not decode EIP-3009; recipient covered by payTo scan)");
   if (hard.length || r.riskGroup === "High") return { verdict: "BLOCK", reason: label };
   if (r.riskGroup === "Medium") return { verdict: "HOLD", reason: label };
   return { verdict: "CLEAN", reason: label };
@@ -188,13 +206,18 @@ export function authorizationTypedData(auth: EvmExactAuthorization, testnetAsset
   };
 }
 
-async function screenAuthorization(
-  auth: EvmExactAuthorization,
-  testnetAsset: string,
-  domain: { name: string; version: string },
-): Promise<CheckResult> {
+/** Local integrity check: the signed authorization must pay exactly the screened payTo and amount. */
+export function authorizationMismatch(auth: EvmExactAuthorization, payTo: string, amount: string): string | undefined {
+  if (auth.to.toLowerCase() !== payTo.toLowerCase()) return `authorization pays ${auth.to}, not the screened payTo ${payTo}`;
+  if (auth.value !== amount) return `authorization value ${auth.value} != quoted amount ${amount}`;
+}
+
+async function screenAuthorization(input: ScreenInput): Promise<CheckResult> {
+  const { authorization: auth, asset: testnetAsset, domain } = input;
   const t0 = Date.now();
   const endpoint = "POST /api/public/v2/extension/analysis/signature";
+  const mismatch = authorizationMismatch(auth, input.payTo, input.amount);
+  if (mismatch) return { check: "authorization", endpoint: "local integrity check", verdict: "BLOCK", reason: mismatch, ms: 0 };
   try {
     const typed = authorizationTypedData(auth, testnetAsset, domain.name, domain.version);
     const r = await call<SignatureAnalysis>("POST", "/api/public/v2/extension/analysis/signature", {
@@ -220,6 +243,7 @@ function failClosed(check: CheckResult["check"], endpoint: string, e: unknown, t
 export interface ScreenInput {
   payTo: string;
   asset: string;
+  amount: string; // atomic, from the 402 quote
   authorization: EvmExactAuthorization;
   domain: { name: string; version: string };
 }
@@ -228,7 +252,7 @@ export async function screenPayment(input: ScreenInput): Promise<Screening> {
   const checks = await Promise.all([
     screenAddress(input.payTo),
     screenToken(input.asset),
-    screenAuthorization(input.authorization, input.asset, input.domain),
+    screenAuthorization(input),
   ]);
   const verdict = worst(checks.map((c) => c.verdict));
   return {

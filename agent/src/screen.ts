@@ -7,6 +7,7 @@ const from = "0x0000000000000000000000000000000000000001";
 const s = await screenPayment({
   payTo,
   asset: cfg.usdc(),
+  amount: "50000",
   domain: { name: "USDC", version: "2" },
   authorization: { from, to: payTo, value: "50000", validAfter: "0", validBefore: "9999999999", nonce: `0x${"00".repeat(32)}` },
 });

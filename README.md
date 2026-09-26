@@ -88,7 +88,7 @@ Minimum `.env` for the demo:
 
 - `AGENT_PRIVATE_KEY`: a Base Sepolia wallet funded with testnet USDC from [faucet.circle.com](https://faucet.circle.com). Add a little ETH if you deploy the contract, to pay for `markPaid` gas.
 - `CLEAN_SUPPLIER_ADDRESS`: any address you control. It receives the USDC.
-- `RISKY_SUPPLIER_ADDRESS`: a known-risky **mainnet** address (from the Intercepta Discord). It defaults to the placeholder in [shared/src/config.ts](shared/src/config.ts).
+- `RISKY_SUPPLIER_ADDRESS`: a known-risky **mainnet** address. It defaults to the Ronin bridge exploiter (OFAC-sanctioned, toxicScore 100 in Intercepta); see [shared/src/config.ts](shared/src/config.ts).
 - `INTERCEPTA_API_KEY`: without it, every payment fails closed to ESCALATE.
 - `WORLD_MODE=mock` (the default). Or `oidc` with `WORLD_CLIENT_ID` and `WORLD_CLIENT_SECRET` from a registered sandbox app.
 
@@ -148,12 +148,13 @@ All calls are live (`https://api.web3antivirus.io`, `X-API-KEY` header). There a
 
 | What | Endpoint | Where |
 | --- | --- | --- |
-| HTTP client (auth, timeout) | – | [agent/src/intercepta.ts:45-58](agent/src/intercepta.ts#L45-L58) |
-| payTo quick scan | `GET /api/public/v2/extension/account/{address}/quick-scan` | [agent/src/intercepta.ts:92](agent/src/intercepta.ts#L92) |
-| payTo deep scan (if the quick scan finds anything) | `GET /api/public/v2/extension/account/{address}/toxic-score` | [agent/src/intercepta.ts:97](agent/src/intercepta.ts#L97) |
-| token scan | `GET /api/public/v2/extension/token-intelligence/token/{address}/risks` | [agent/src/intercepta.ts:132](agent/src/intercepta.ts#L132) |
-| payment authorization (EIP-712) | `POST /api/public/v2/extension/analysis/signature` | [agent/src/intercepta.ts:200](agent/src/intercepta.ts#L200) |
-| pipeline entry | `screenPayment()` | [agent/src/intercepta.ts:227](agent/src/intercepta.ts#L227) |
+| HTTP client (auth, timeout, rate-limit spacing + 429 retry) | – | [agent/src/intercepta.ts:46-75](agent/src/intercepta.ts#L46-L75) |
+| payTo quick scan | `GET /api/public/v2/extension/account/{address}/quick-scan` | [agent/src/intercepta.ts:108](agent/src/intercepta.ts#L108) |
+| payTo deep scan (if the quick scan finds anything) | `GET /api/public/v2/extension/account/{address}/toxic-score` | [agent/src/intercepta.ts:113](agent/src/intercepta.ts#L113) |
+| token scan | `GET /api/public/v2/extension/token-intelligence/token/{address}/risks` | [agent/src/intercepta.ts:148](agent/src/intercepta.ts#L148) |
+| payment authorization (EIP-712) | `POST /api/public/v2/extension/analysis/signature` | [agent/src/intercepta.ts:223](agent/src/intercepta.ts#L223) |
+| authorization integrity (signed `to`/`value` must equal the screened payTo/amount) | local | [agent/src/intercepta.ts:210](agent/src/intercepta.ts#L210) |
+| pipeline entry | `screenPayment()` | [agent/src/intercepta.ts:251](agent/src/intercepta.ts#L251) |
 | called from the agent loop, before any payment is sent | | [agent/src/agent.ts:54](agent/src/agent.ts#L54) (and a re-screen after approval at [:77](agent/src/agent.ts#L77)) |
 | verdict → decision | `decide()` | [agent/src/policy.ts:27](agent/src/policy.ts#L27), called at [agent/src/agent.ts:58](agent/src/agent.ts#L58) |
 
@@ -162,13 +163,20 @@ All calls are live (`https://api.web3antivirus.io`, `X-API-KEY` header). There a
 - It screens the **real payTo address** unchanged.
 - It maps the testnet asset and the EIP-712 domain to their **Base mainnet** equivalents: testnet USDC becomes `0x8335…2913`, with chainId 8453.
 
+**Live results** (`npm run screen -w agent -- <address>`):
+
+| payTo | payTo check | token check | authorization check | Verdict |
+| --- | --- | --- | --- | --- |
+| `0x098B…2F96` (Ronin exploiter, OFAC) | BLOCK: toxicScore 100, `known_scammer`, `sanction_address`, `blacklist`, `fake_phishing_transfer` | CLEAN: USDC whitelisted | riskGroup Low | **BLOCK → REFUSE** |
+| `0xd8dA…6045` (vitalik.eth) | CLEAN: toxicScore 0 | CLEAN | riskGroup Low | **CLEAN → PAY** |
+
 **API feedback:**
 
-- The per-endpoint OpenAPI specs, and the `.md` versions of the docs, made the integration quick. An agent can read them directly.
-- `scan-message` takes `message` as a JSON **string** rather than an object, which is easy to miss. Its `chainId` enum also has no testnets, so x402 testnet flows need a mainnet mapping.
-- The `toxicScore` scale and trait `risk` values aren't documented (is it 0–100?). Our thresholds (≥70 BLOCK, ≥40 HOLD, >0 CAUTION) are a guess. A recommended action, like the `action: block|warn` field on token scans, would help.
-- A first-class "screen this x402 payment" endpoint would remove three round-trips. It would take the payTo, the asset and the EIP-3009 authorization in one call.
-- Getting a key goes through a Typeform. An instant hackathon or sandbox key would save time.
+- The per-endpoint OpenAPI specs, and the `.md` versions of the docs, made the integration quick. An agent can read them directly. Address and token scans returned clear, actionable results within about 1s.
+- **`scan-message` doesn't decode EIP-3009 `TransferWithAuthorization`**, which is the exact thing x402 signs. It returns `messageType: null`, `domain` fields null, no addresses and riskGroup `Low`, even when `to` is a sanctioned address. We cover this with the payTo scan plus a local check that the signed `to` and `value` match the screened payTo and amount. Native x402/EIP-3009 support would make this endpoint the natural single check.
+- The API key is rate-limited per second, so three parallel calls hit **HTTP 429**. We space requests 400ms apart and retry. Documenting the limit, or adding a `Retry-After` header, would help.
+- `quick-scan` returns **404** for contract addresses ("An Externally Owned Account with this address doesn't exist"). A payTo can legitimately be a contract, such as a smart wallet or a splitter, so a verdict for contracts would help. We fail closed to human approval.
+- The `toxicScore` scale isn't documented; from live data it appears to be 0–100. A recommended action, like the `action: block|warn` on token scans, would remove guesswork from our thresholds (≥70 BLOCK, ≥40 HOLD, >0 CAUTION). `scan-message` also takes `message` as a JSON **string**, and its `chainId` enum has no testnets.
 
 ## World: Best Use of World ID for Agents
 

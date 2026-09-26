@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addressVerdict, messageVerdict, tokenVerdict, worst } from "../src/intercepta.js";
+import { addressVerdict, authorizationMismatch, messageVerdict, tokenVerdict, worst } from "../src/intercepta.js";
 import { decide } from "../src/policy.js";
 
 const limits = { autoPayLimit: 1_000_000n, capLimit: 100_000n };
@@ -40,4 +40,11 @@ test("token + message verdicts", () => {
   assert.equal(messageVerdict({ riskGroup: "Medium", detectors: [] }).verdict, "HOLD");
   assert.equal(messageVerdict({ riskGroup: "Low", detectors: [{ code: "WALLET_DRAINER", description: "" }] }).verdict, "BLOCK");
   assert.equal(worst(["CLEAN", "HOLD", "CAUTION"]), "HOLD");
+});
+
+test("authorization must match the screened payTo and amount", () => {
+  const auth = { from: "0x1", to: "0xAbC", value: "50000", validAfter: "0", validBefore: "1", nonce: "0x00" } as const;
+  assert.equal(authorizationMismatch(auth as any, "0xabc", "50000"), undefined);
+  assert.match(authorizationMismatch(auth as any, "0xdef", "50000")!, /not the screened payTo/);
+  assert.match(authorizationMismatch(auth as any, "0xabc", "60000")!, /!= quoted amount/);
 });

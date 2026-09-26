@@ -51,7 +51,7 @@ export async function payInvoice(invoiceId: number, opts: RunOptions = {}): Prom
     const domain = r.extra as { name: string; version: string };
 
     // 3. Intercepta screening of payTo, token and the authorization itself
-    const screening = await screenPayment({ payTo: r.payTo, asset: r.asset, authorization: authorizationOf(payload), domain });
+    const screening = await screenPayment({ payTo: r.payTo, asset: r.asset, amount: r.amount, authorization: authorizationOf(payload), domain });
     update(rec, { screening }, `Intercepta: ${screening.verdict}`, screening.reasons.join("; "));
 
     // 4. Policy
@@ -74,7 +74,7 @@ export async function payInvoice(invoiceId: number, opts: RunOptions = {}): Prom
 
       // The first authorization may have aged while the human decided; sign a fresh one and re-screen it.
       payload = await sign(q);
-      const rescreen = await screenPayment({ payTo: r.payTo, asset: r.asset, authorization: authorizationOf(payload), domain });
+      const rescreen = await screenPayment({ payTo: r.payTo, asset: r.asset, amount: r.amount, authorization: authorizationOf(payload), domain });
       if (rescreen.verdict === "BLOCK") {
         update(rec, { screening: rescreen, outcome: "REFUSED", outcomeReason: rescreen.reasons.join("; ") },
           "Re-screen after approval: BLOCK, refused");

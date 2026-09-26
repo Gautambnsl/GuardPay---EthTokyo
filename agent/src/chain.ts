@@ -1,7 +1,7 @@
 import { createWalletClient, decodeEventLog, http, parseAbi, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
-import { cfg, invoiceTokenAbi, optionalEnv, publicClient } from "@guardpay/shared";
+import { cfg, getInvoice, invoiceTokenAbi, optionalEnv, publicClient } from "@guardpay/shared";
 
 const issueAbi = parseAbi([
   "function issue(address supplier, uint256 amount, uint64 dueDate) returns (uint256)",
@@ -29,10 +29,19 @@ export async function issueInvoice(supplier: `0x${string}`, amount: bigint): Pro
   for (const log of receipt.logs) {
     try {
       const ev = decodeEventLog({ abi: issueAbi, ...log });
-      if (ev.eventName === "InvoiceIssued") return Number(ev.args.id);
+      if (ev.eventName === "InvoiceIssued") return await visible(Number(ev.args.id));
     } catch {}
   }
   throw new Error("InvoiceIssued event not found");
+}
+
+/** Public RPCs are load-balanced; wait until the new invoice is readable before the seller is asked for it. */
+async function visible(id: number): Promise<number> {
+  for (let i = 0; i < 20; i++) {
+    if (await getInvoice(id)) return id;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return id;
 }
 
 /** Agent marks the invoice NFT paid, referencing the x402 settlement tx. */

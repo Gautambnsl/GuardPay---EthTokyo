@@ -58,6 +58,24 @@ For every invoice, the agent ([agent/src/agent.ts](agent/src/agent.ts)):
 
 Screening **fails closed**: if Intercepta can't be reached, the verdict is `HOLD`, so a human decides. The agent never auto-pays unscreened.
 
+## Live on Base Sepolia
+
+| | |
+| --- | --- |
+| InvoiceToken | [`0x6a9dCF04aA59C2F7E3B731C75dAC1c5B3c5Cd326`](https://sepolia.basescan.org/address/0x6a9dCF04aA59C2F7E3B731C75dAC1c5B3c5Cd326) |
+| Agent wallet | [`0x982BBcD31e83bF2c80E7EBe02C95245a08ab83e6`](https://sepolia.basescan.org/address/0x982BBcD31e83bF2c80E7EBe02C95245a08ab83e6) |
+| Clean supplier | [`0x5A0b66f4a0B21B1bf0f8A7413451E628606A9Cfc`](https://sepolia.basescan.org/address/0x5A0b66f4a0B21B1bf0f8A7413451E628606A9Cfc) |
+
+This is a full run of `npm run demo`: live Intercepta, x402 settlement through the x402.org facilitator, and `markPaid` on the InvoiceToken.
+
+| # | Invoice | Intercepta | Decision | World ID | Outcome |
+| --- | --- | --- | --- | --- | --- |
+| 1 | #10, $0.05 → clean supplier | CLEAN | PAY | – | **PAID**: [x402 settlement](https://sepolia.basescan.org/tx/0x6c7c1d5fb48d79dbde46e2820bbc531d756862a15cc6cd7f91208a670f76c643), [markPaid](https://sepolia.basescan.org/tx/0xab59a2b57f2b4dd555bda3586f457490d0782d0aa0159e158e3db26a77b31964) |
+| 2 | #11, $0.05 → Ronin exploiter | BLOCK (toxicScore 100: `known_scammer`, `sanction_address`, `blacklist`, `fake_phishing_transfer`) | REFUSE | – | **REFUSED**: nothing sent, invoice still unpaid |
+| 3 | #12, $2.00 → clean supplier | CLEAN | ESCALATE (> $1 limit) | approved and verified | **PAID**: [x402 settlement](https://sepolia.basescan.org/tx/0x2482d5633d7f75ebd6f359e11fc8ed01cc6b6e3824ff0509c1ca3bfa2e5201bc), [markPaid](https://sepolia.basescan.org/tx/0x99a205dd7f0e2d5ac65dea746b8009585567c8c2a184aaeb8c1ff88d4cd71ba5) |
+| 4 | #13, $2.00 → clean supplier | CLEAN | ESCALATE | denied | **NOT PAID** |
+| 4b | #14, $2.00 → clean supplier | CLEAN | ESCALATE | expired (8s) | **NOT PAID** |
+
 ## Repo layout
 
 | Path | What |

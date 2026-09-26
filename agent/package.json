@@ -7,7 +7,9 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "demo": "tsx src/demo.ts",
-    "typecheck": "tsc -p ."
+    "typecheck": "tsc -p .",
+    "test": "node --import tsx --test test/*.test.ts",
+    "screen": "tsx src/screen.ts"
   },
   "dependencies": {
     "@x402/core": "^2.27.0",

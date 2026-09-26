@@ -151,6 +151,7 @@ export async function requestApproval(intent: PaymentIntent, opts: { ttlSeconds?
   };
   if (!res.ok) throw new Error(`device_authorization failed: ${body.error ?? res.status} ${body.error_description ?? ""}`);
 
+  console.log(`[world] POST ${new URL(d.device_authorization_endpoint).pathname} → user_code ${body.user_code} (${c.issuer})`);
   const now = Date.now();
   const ttl = Math.min(body.expires_in, opts.ttlSeconds ?? c.ttlSeconds);
   const a = {
@@ -203,9 +204,11 @@ export async function waitForApproval(id: string): Promise<Approval> {
       }),
     });
     const body = (await res.json().catch(() => ({}))) as { id_token?: string; error?: string; error_description?: string };
+    console.log(`[world] POST token (device_code) → ${res.ok && body.id_token ? "id_token received" : body.error}`);
     if (res.ok && body.id_token) {
       try {
         const claims = await verifyApprovalToken(body.id_token, a, c, d);
+        console.log(`[world] id_token verified: iss ✓ aud ✓ sig(JWKS) ✓ acr=orb ✓ fresh ✓ jti single-use ✓ (sub ${claims.sub?.slice(0, 10)}…)`);
         setStatus(id, "approved", "verified World ID human approval", claims);
       } catch (e) {
         setStatus(id, "invalid", `id_token rejected: ${(e as Error).message}`);

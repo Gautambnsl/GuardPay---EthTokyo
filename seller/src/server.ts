@@ -3,7 +3,9 @@ import { paymentMiddleware, x402ResourceServer } from "@x402/express";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import type { HTTPRequestContext } from "@x402/core/http";
-import { cfg, formatUsdc, getInvoice, NETWORK } from "@guardpay/shared";
+import { captureConsole, cfg, formatUsdc, getInvoice, logsSince, NETWORK } from "@guardpay/shared";
+
+captureConsole("seller");
 
 /**
  * Supplier invoice gateway. POST /invoices/:id/pay is paywalled with x402:
@@ -11,6 +13,23 @@ import { cfg, formatUsdc, getInvoice, NETWORK } from "@guardpay/shared";
  */
 const app = express();
 app.use(express.json());
+
+// Request log: shows the x402 handshake (402 challenge, then paid retry) in the dashboard console.
+app.use((req, res, next) => {
+  if (req.path === "/logs") return next();
+  const paid = Boolean(req.headers["payment-signature"] || req.headers["x-payment"]);
+  const t0 = Date.now();
+  res.on("finish", () => {
+    const note =
+      res.statusCode === 402 ? (paid ? "payment rejected" : "Payment Required → quote sent")
+      : paid && res.statusCode === 200 ? `payment verified + settled by facilitator${res.getHeader("payment-response") ? " (tx in PAYMENT-RESPONSE)" : ""}`
+      : "";
+    console.log(`[seller] ${req.method} ${req.path}${paid ? " +PAYMENT-SIGNATURE" : ""} → ${res.statusCode} ${note} (${Date.now() - t0}ms)`);
+  });
+  next();
+});
+
+app.get("/logs", (req, res) => res.json(logsSince(Number(req.query.since ?? 0))));
 
 const invoiceIdFrom = (ctx: HTTPRequestContext) => Number(ctx.path.split("/")[2]);
 

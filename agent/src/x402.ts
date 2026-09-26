@@ -38,6 +38,7 @@ export async function quote(invoiceId: number): Promise<Quote> {
   const paymentRequired = http().getPaymentRequiredResponse((h) => res.headers.get(h), body);
   const requirements = paymentRequired.accepts[0];
   if (!requirements) throw new Error("Seller offered no payment options");
+  console.log(`[x402] POST ${new URL(url).pathname} → 402: pay ${Number(requirements.amount) / 1e6} USDC to ${requirements.payTo.slice(0, 8)}… on ${requirements.network}`);
   return { url, paymentRequired, requirements };
 }
 
@@ -52,7 +53,10 @@ export interface EvmExactAuthorization {
 
 export async function sign(q: Quote): Promise<PaymentPayload> {
   // Only offer the option we screened, so the client can't pick a different payTo/asset.
-  return http().createPaymentPayload({ ...q.paymentRequired, accepts: [q.requirements] });
+  const p = await http().createPaymentPayload({ ...q.paymentRequired, accepts: [q.requirements] });
+  const a = authorizationOf(p);
+  console.log(`[x402] signed EIP-3009 TransferWithAuthorization (held in memory): ${Number(a.value) / 1e6} USDC → ${a.to.slice(0, 8)}…, nonce ${a.nonce.slice(0, 10)}…`);
+  return p;
 }
 
 export const authorizationOf = (p: PaymentPayload) =>
@@ -70,6 +74,7 @@ export interface Settlement {
  * settlement failure we retry once with a freshly signed authorization (same screened payTo/amount).
  */
 export async function submit(q: Quote, payload: PaymentPayload, retries = 1): Promise<Settlement> {
+  console.log(`[x402] POST ${new URL(q.url).pathname} +PAYMENT-SIGNATURE → seller → facilitator verify + settle`);
   const res = await fetch(q.url, { method: "POST", headers: http().encodePaymentSignatureHeader(payload) });
   const body = await res.json().catch(() => undefined);
   if (!res.ok) {

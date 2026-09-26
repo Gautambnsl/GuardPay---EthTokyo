@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type { Approval, DecisionRecord, State } from "./types";
 import { short, stagesFor, usd, type Stage } from "./stages";
 
@@ -95,6 +95,8 @@ export function App() {
             )}
             {focus && <FocusDetails r={focus} />}
           </section>
+
+          <BackendConsole />
 
           <section className="panel">
             <div className="panel-head">
@@ -331,5 +333,72 @@ function LogRow({ r, active, onClick }: { r: DecisionRecord; active: boolean; on
         <Chip v={r.outcome} />
       </span>
     </button>
+  );
+}
+
+interface LogLine { t: number; source: string; level: "info" | "warn" | "error"; msg: string }
+
+const TAG = /^\[([a-z0-9-]+)\]\s*/i;
+
+/** Live tail of the agent + seller processes (their real stdout), for showing the backend at work. */
+function BackendConsole() {
+  const [lines, setLines] = useState<LogLine[]>([]);
+  const [open, setOpen] = useState(true);
+  const [follow, setFollow] = useState(true);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const since = useRef(Date.now() - 5 * 60_000);
+
+  useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/logs?since=${since.current}`);
+        const next: LogLine[] = await res.json();
+        if (alive && next.length) {
+          since.current = next[next.length - 1]!.t;
+          setLines((prev) => [...prev, ...next].slice(-400));
+        }
+      } catch {}
+    };
+    poll();
+    const t = setInterval(poll, 700);
+    return () => ((alive = false), clearInterval(t));
+  }, []);
+
+  useEffect(() => {
+    if (follow && boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight;
+  }, [lines, follow]);
+
+  return (
+    <section className="panel console-panel">
+      <div className="panel-head">
+        <div>
+          <h2>Backend console</h2>
+          <p className="dim small">Live output of the treasury agent and the supplier's x402 server running on this machine.</p>
+        </div>
+        <div className="controls">
+          <label className="toggle"><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} /> Follow</label>
+          <button className="ghost" onClick={() => setLines([])}>Clear</button>
+          <button className="ghost" onClick={() => setOpen(!open)} aria-expanded={open}>{open ? "Hide" : "Show"}</button>
+        </div>
+      </div>
+      {open && (
+        <div className="terminal" ref={boxRef} role="log" aria-live="polite">
+          {lines.length === 0 && <div className="dim">Waiting for activity… issue an invoice from the supplier console.</div>}
+          {lines.map((l, i) => {
+            const m = l.msg.match(TAG);
+            const tag = m?.[1] ?? l.source;
+            const rest = m ? l.msg.slice(m[0].length) : l.msg;
+            return (
+              <div key={i} className={`tl lvl-${l.level}`}>
+                <span className="tt">{new Date(l.t).toLocaleTimeString([], { hour12: false })}</span>
+                <span className={`tag tag-${tag}`}>{tag}</span>
+                <span className="tm">{rest}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }

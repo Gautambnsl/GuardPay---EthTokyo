@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import express from "express";
-import { cfg, formatUsdc, optionalEnv, ROOT_DIR } from "@guardpay/shared";
+import { captureConsole, cfg, formatUsdc, logsSince, optionalEnv, ROOT_DIR, type LogLine } from "@guardpay/shared";
 import { payInvoice } from "./agent.js";
 import { onChain, payerAddress, supplierIssueInvoice } from "./chain.js";
 import { startListener } from "./listener.js";
@@ -60,6 +60,7 @@ export async function runAll(human: "auto" | "manual" = "auto") {
 }
 
 export async function startServer() {
+  captureConsole("agent");
   const app = express();
   app.use(express.json());
   const world = worldConfig();
@@ -109,6 +110,14 @@ export async function startServer() {
     const human = req.body?.human === "manual" ? "manual" : "auto";
     if (!guard(() => runAll(human))) return res.status(409).json({ error: "a run is in progress" });
     res.status(202).json({ started: "all", human });
+  });
+
+  app.get("/api/logs", async (req, res) => {
+    const since = Number(req.query.since ?? 0);
+    const seller = await fetch(`${cfg.sellerUrl()}/logs?since=${since}`, { signal: AbortSignal.timeout(1500) })
+      .then((r) => r.json() as Promise<LogLine[]>)
+      .catch(() => []);
+    res.json([...logsSince(since), ...seller].sort((a, b) => a.t - b.t).slice(-300));
   });
 
   app.post("/api/approvals/:id/cancel", (req, res) => {

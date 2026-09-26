@@ -51,6 +51,16 @@ async function slot() {
   if (wait) await new Promise((r) => setTimeout(r, wait));
 }
 
+function summarize(text: string) {
+  try {
+    const j = JSON.parse(text);
+    if ("toxicScore" in j) return `toxicScore=${j.toxicScore}${j.traits?.length ? ` [${j.traits.map((t: { name: string }) => t.name).join(",")}]` : ""}`;
+    if ("riskLevel" in j) return `${j.token?.symbol ?? "token"} riskLevel=${j.riskLevel} action=${j.action}`;
+    if ("riskGroup" in j) return `riskGroup=${j.riskGroup} messageType=${j.messageType}`;
+  } catch {}
+  return "";
+}
+
 async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
   const key = optionalEnv("INTERCEPTA_API_KEY");
   // Without a key every check fails closed to HOLD (human approval).
@@ -68,6 +78,8 @@ async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Pr
       await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
       continue;
     }
+    const shortPath = path.replace(/0x[0-9a-fA-F]{40}/, (a) => `${a.slice(0, 6)}…${a.slice(-4)}`).split("?")[0];
+    console.log(`[intercepta] ${method} ${shortPath} → ${res.status}${res.ok ? ` ${summarize(text)}` : ""}`);
     if (!res.ok) throw new InterceptaError(`HTTP ${res.status} ${text.slice(0, 200)}`);
     return JSON.parse(text) as T;
   }

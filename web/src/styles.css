@@ -182,3 +182,14 @@ button:focus-visible, .button:focus-visible, a:focus-visible { outline: 2px soli
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ── Backend console ────────────────────── */
+.terminal { background: #05070a; border: 1px solid #1c222c; border-radius: 12px; padding: 12px 14px; height: 300px; overflow-y: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; line-height: 1.6; }
+.tl { display: flex; gap: 10px; align-items: baseline; white-space: pre-wrap; overflow-wrap: anywhere; animation: rise .2s ease both; }
+.tt { color: #4b5563; flex: none; }
+.tag { flex: none; min-width: 78px; font-weight: 700; color: var(--dim); }
+.tm { color: #cbd5e1; }
+.tag-agent { color: #7aa7ff; } .tag-listener { color: #38bdf8; } .tag-x402 { color: #fbbf24; } .tag-intercepta { color: #34d399; }
+.tag-world { color: #f5f5f5; } .tag-seller, .tag-supplier { color: #f0abfc; }
+.lvl-warn .tm { color: #fcd34d; } .lvl-error .tm { color: #fca5a5; }

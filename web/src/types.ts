@@ -25,6 +25,9 @@ export interface DecisionRecord {
   id: string;
   scenario?: string;
   invoiceId: number;
+  issuer?: string;
+  issueTx?: string;
+  dueDate?: number;
   payTo?: string;
   amount?: string;
   screening?: { verdict: Verdict; reasons: string[]; checks: Check[] };
@@ -48,8 +51,11 @@ export interface Scenario {
   autoHuman: string;
 }
 
+export interface Issuing { scenario: string; human: string; since: number; txHash: string }
+
 export interface State {
   busy: boolean;
+  issuing: Issuing[];
   records: DecisionRecord[];
   approvals: Approval[];
   scenarios: Scenario[];
@@ -62,5 +68,7 @@ export interface State {
     interceptaConfigured: boolean;
     agentWalletConfigured: boolean;
     invoiceToken: string | null;
+    payer: string | null;
+    listening: boolean;
   };
 }

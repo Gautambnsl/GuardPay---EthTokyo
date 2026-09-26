@@ -15,6 +15,9 @@ export interface DecisionRecord {
   id: string;
   scenario?: string;
   invoiceId: number;
+  issuer?: string; // supplier wallet that issued the invoice NFT
+  issueTx?: string;
+  dueDate?: number;
   payTo?: string;
   asset?: string;
   amount?: string; // atomic USDC

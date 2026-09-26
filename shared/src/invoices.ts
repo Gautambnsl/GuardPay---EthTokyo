@@ -4,7 +4,9 @@ import { cfg, USDC_DECIMALS } from "./config.js";
 
 export interface Invoice {
   id: number;
-  supplier: `0x${string}`;
+  issuer?: `0x${string}`; // supplier that issued it (initial NFT holder)
+  payer?: `0x${string}`; // company that owes it
+  supplier: `0x${string}`; // payTo for the x402 payment
   amount: bigint; // USDC atomic units (6 decimals)
   dueDate: number; // unix seconds
   paid: boolean;
@@ -12,15 +14,15 @@ export interface Invoice {
 }
 
 export const invoiceTokenAbi = parseAbi([
-  "struct Invoice { address supplier; uint256 amount; uint64 dueDate; bool paid; bytes32 paymentRef; }",
+  "struct Invoice { address issuer; address payer; address payTo; uint256 amount; uint64 dueDate; bool paid; bytes32 paymentRef; }",
   "function getInvoice(uint256 id) view returns (Invoice)",
+  "function issue(address payer, address payTo, uint256 amount, uint64 dueDate) returns (uint256)",
   "function markPaid(uint256 id, bytes32 paymentRef)",
-  "function agent() view returns (address)",
+  "event InvoiceIssued(uint256 indexed id, address indexed issuer, address indexed payer, address payTo, uint256 amount, uint64 dueDate)",
 ]);
 
 /**
- * Demo invoices. Mirrors contracts/script/Deploy.s.sol, which issues the same four on-chain.
- * Used as a fallback only when INVOICE_TOKEN_ADDRESS is not set.
+ * Offline fallback when INVOICE_TOKEN_ADDRESS is not set (no chain, no listener).
  */
 function localInvoices(): Invoice[] {
   const due = Math.floor(Date.now() / 1000) + 14 * 86400;
@@ -46,7 +48,9 @@ export async function getInvoice(id: number): Promise<Invoice | undefined> {
     });
     return {
       id,
-      supplier: inv.supplier,
+      issuer: inv.issuer,
+      payer: inv.payer,
+      supplier: inv.payTo,
       amount: inv.amount,
       dueDate: Number(inv.dueDate),
       paid: inv.paid,

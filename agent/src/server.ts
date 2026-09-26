@@ -3,21 +3,43 @@ import { resolve } from "node:path";
 import express from "express";
 import { cfg, formatUsdc, optionalEnv, ROOT_DIR } from "@guardpay/shared";
 import { payInvoice } from "./agent.js";
-import { issueInvoice, onChain } from "./chain.js";
+import { onChain, payerAddress, supplierIssueInvoice } from "./chain.js";
+import { startListener } from "./listener.js";
 import { allRecords, clearRecords, type DecisionRecord } from "./log.js";
 import { mockWorldRouter } from "./mock-world.js";
 import { limitsFromEnv } from "./policy.js";
 import { SCENARIOS, scenario, type HumanAction, type Scenario } from "./scenarios.js";
 import { cancelApproval, listApprovals, worldConfig } from "./worldid.js";
+import type { IssuedInvoice } from "./listener.js";
 
 /** Agent API for the dashboard. All secrets stay here; the browser only sees decisions. */
 
 let busy = false;
 
+/** Invoices a demo supplier just issued, waiting for the listener to pick them up. Keyed by tx hash. */
+interface PendingIssue { scenario: string; human: HumanAction; ttlSeconds?: number; since: number; txHash: string; resolve: (r: DecisionRecord) => void }
+const pendingIssues = new Map<string, PendingIssue>();
+
 export async function runScenario(s: Scenario, human: HumanAction): Promise<DecisionRecord> {
-  // On-chain: issue a fresh invoice NFT so every run pays a new, unpaid invoice.
-  const invoiceId = (onChain() && (await issueInvoice(s.supplier(), s.amount).catch(() => undefined))) || s.localInvoiceId;
-  return payInvoice(invoiceId, { scenario: s.key, human, ttlSeconds: s.ttlSeconds });
+  if (!onChain()) return payInvoice(s.localInvoiceId, { scenario: s.key, human, ttlSeconds: s.ttlSeconds });
+  // The supplier issues the invoice on-chain; the agent's listener detects it and processes it.
+  return new Promise<DecisionRecord>((resolve, reject) => {
+    supplierIssueInvoice(s.supplier(), s.amount)
+      .then((txHash) => {
+        pendingIssues.set(txHash.toLowerCase(), { scenario: s.key, human, ttlSeconds: s.ttlSeconds, since: Date.now(), txHash, resolve });
+        console.log(`[supplier] issued invoice for scenario ${s.key} (tx ${txHash})`);
+      })
+      .catch(reject);
+  });
+}
+
+function onInvoiceIssued(inv: IssuedInvoice) {
+  const p = pendingIssues.get(inv.txHash.toLowerCase());
+  pendingIssues.delete(inv.txHash.toLowerCase());
+  // Invoices from outside the demo wait for a real human if escalated.
+  return payInvoice(inv.id, { scenario: p?.scenario, human: p?.human ?? "manual", ttlSeconds: p?.ttlSeconds, origin: inv }).then(
+    (rec) => p?.resolve(rec),
+  );
 }
 
 export async function runAll(human: "auto" | "manual" = "auto") {
@@ -36,6 +58,7 @@ export async function startServer() {
     const l = limitsFromEnv();
     res.json({
       busy,
+      issuing: [...pendingIssues.values()].map(({ resolve: _r, ...p }) => p),
       records: allRecords(),
       approvals: listApprovals().filter((a) => a.status === "pending"),
       scenarios: SCENARIOS.map(({ supplier, amount, ...s }) => ({ ...s, supplier: supplier(), amountUsdc: formatUsdc(amount) })),
@@ -48,6 +71,8 @@ export async function startServer() {
         interceptaConfigured: Boolean(optionalEnv("INTERCEPTA_API_KEY")),
         agentWalletConfigured: Boolean(optionalEnv("AGENT_PRIVATE_KEY")),
         invoiceToken: cfg.invoiceToken() ?? null,
+        payer: optionalEnv("AGENT_PRIVATE_KEY") ? payerAddress() : null,
+        listening: onChain(),
       },
     });
   });
@@ -86,12 +111,13 @@ export async function startServer() {
   const dist = resolve(ROOT_DIR, "web/dist");
   if (existsSync(dist)) app.use(express.static(dist));
 
-  return new Promise<void>((ok) =>
+  await new Promise<void>((ok) =>
     app.listen(cfg.agentPort(), () => {
       console.log(`[agent] API on http://localhost:${cfg.agentPort()}  (World ID: ${world.mode} @ ${world.issuer})`);
       ok();
     }),
   );
+  startListener(onInvoiceIssued);
 }
 
 if (process.argv[1]?.endsWith("server.ts")) await startServer();

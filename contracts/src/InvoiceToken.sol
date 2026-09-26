@@ -2,14 +2,16 @@
 pragma solidity ^0.8.24;
 
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title InvoiceToken
-/// @notice Tokenized supplier invoices. Each NFT is one invoice owned by its supplier.
-///         The treasury agent marks an invoice paid once its x402 USDC payment settles.
-contract InvoiceToken is ERC721, Ownable {
+/// @notice Tokenized supplier invoices (receivables). A supplier issues an invoice to a payer and
+///         receives the NFT: whoever holds it owns the right to be paid, so it can be held or sold.
+///         The payer's treasury agent watches InvoiceIssued, pays over x402, then marks it paid.
+contract InvoiceToken is ERC721 {
     struct Invoice {
-        address supplier; // payee for the x402 payment
+        address issuer; // supplier that issued the invoice (initial NFT holder)
+        address payer; // company that owes the money; only its agent can mark it paid
+        address payTo; // where the x402 USDC payment must go
         uint256 amount; // USDC, 6 decimals
         uint64 dueDate; // unix seconds
         bool paid;
@@ -17,52 +19,50 @@ contract InvoiceToken is ERC721, Ownable {
     }
 
     uint256 public nextId = 1;
-    address public agent;
     mapping(uint256 => Invoice) private _invoices;
 
-    event InvoiceIssued(uint256 indexed id, address indexed supplier, uint256 amount, uint64 dueDate);
-    event InvoicePaid(uint256 indexed id, bytes32 paymentRef);
-    event AgentUpdated(address indexed agent);
+    event InvoiceIssued(
+        uint256 indexed id, address indexed issuer, address indexed payer, address payTo, uint256 amount, uint64 dueDate
+    );
+    event InvoicePaid(uint256 indexed id, address indexed payer, bytes32 paymentRef);
 
-    error NotAgent();
+    error NotPayer();
     error AlreadyPaid(uint256 id);
     error UnknownInvoice(uint256 id);
+    error InvalidInvoice();
 
-    constructor(address initialOwner, address initialAgent) ERC721("GuardPay Invoice", "GPINV") Ownable(initialOwner) {
-        agent = initialAgent;
-        emit AgentUpdated(initialAgent);
-    }
+    constructor() ERC721("GuardPay Invoice", "GPINV") {}
 
-    modifier onlyAgent() {
-        if (msg.sender != agent) revert NotAgent();
-        _;
-    }
-
-    function setAgent(address newAgent) external onlyOwner {
-        agent = newAgent;
-        emit AgentUpdated(newAgent);
-    }
-
-    /// @notice Issue an invoice NFT to `supplier`.
-    function issue(address supplier, uint256 amount, uint64 dueDate) external onlyOwner returns (uint256 id) {
+    /// @notice Supplier issues an invoice to `payer`; the invoice NFT is minted to the supplier.
+    function issue(address payer, address payTo, uint256 amount, uint64 dueDate) external returns (uint256 id) {
+        if (payer == address(0) || payTo == address(0) || amount == 0) revert InvalidInvoice();
         id = nextId++;
-        _invoices[id] = Invoice({supplier: supplier, amount: amount, dueDate: dueDate, paid: false, paymentRef: 0});
-        _safeMint(supplier, id);
-        emit InvoiceIssued(id, supplier, amount, dueDate);
+        _invoices[id] = Invoice({
+            issuer: msg.sender,
+            payer: payer,
+            payTo: payTo,
+            amount: amount,
+            dueDate: dueDate,
+            paid: false,
+            paymentRef: 0
+        });
+        _safeMint(msg.sender, id);
+        emit InvoiceIssued(id, msg.sender, payer, payTo, amount, dueDate);
     }
 
-    /// @notice Called by the treasury agent after the x402 payment settled.
-    function markPaid(uint256 id, bytes32 paymentRef) external onlyAgent {
+    /// @notice Called by the payer's treasury agent after the x402 payment settled.
+    function markPaid(uint256 id, bytes32 paymentRef) external {
         Invoice storage inv = _invoices[id];
-        if (inv.supplier == address(0)) revert UnknownInvoice(id);
+        if (inv.issuer == address(0)) revert UnknownInvoice(id);
+        if (msg.sender != inv.payer) revert NotPayer();
         if (inv.paid) revert AlreadyPaid(id);
         inv.paid = true;
         inv.paymentRef = paymentRef;
-        emit InvoicePaid(id, paymentRef);
+        emit InvoicePaid(id, msg.sender, paymentRef);
     }
 
     function getInvoice(uint256 id) external view returns (Invoice memory inv) {
         inv = _invoices[id];
-        if (inv.supplier == address(0)) revert UnknownInvoice(id);
+        if (inv.issuer == address(0)) revert UnknownInvoice(id);
     }
 }

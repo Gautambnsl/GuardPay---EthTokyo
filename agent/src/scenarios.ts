@@ -20,7 +20,7 @@ export const SCENARIOS: Scenario[] = [
     localInvoiceId: 1, supplier: cfg.cleanSupplier, amount: 50_000n, autoHuman: "approve",
   },
   {
-    key: "2", title: "Supplier payTo is a known-risky address", expect: "REFUSE",
+    key: "2", title: "Payout address swapped to a sanctioned wallet", expect: "REFUSE",
     localInvoiceId: 2, supplier: cfg.riskySupplier, amount: 50_000n, autoHuman: "deny",
   },
   {

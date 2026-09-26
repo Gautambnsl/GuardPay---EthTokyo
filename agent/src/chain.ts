@@ -1,12 +1,7 @@
-import { createWalletClient, decodeEventLog, http, parseAbi, type Hex } from "viem";
+import { createWalletClient, http, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
-import { cfg, getInvoice, invoiceTokenAbi, optionalEnv, publicClient } from "@guardpay/shared";
-
-const issueAbi = parseAbi([
-  "function issue(address supplier, uint256 amount, uint64 dueDate) returns (uint256)",
-  "event InvoiceIssued(uint256 indexed id, address indexed supplier, uint256 amount, uint64 dueDate)",
-]);
+import { cfg, env, invoiceTokenAbi, optionalEnv, publicClient } from "@guardpay/shared";
 
 const wallet = (key: string) =>
   createWalletClient({ account: privateKeyToAccount(key as Hex), chain: baseSepolia, transport: http(cfg.rpcUrl()) });
@@ -14,34 +9,23 @@ const wallet = (key: string) =>
 /** On-chain mode is on when the InvoiceToken is deployed. */
 export const onChain = () => Boolean(cfg.invoiceToken());
 
-/** Issue a fresh invoice NFT for a demo run (so every run pays a new, unpaid invoice). */
-export async function issueInvoice(supplier: `0x${string}`, amount: bigint): Promise<number | undefined> {
-  const token = cfg.invoiceToken();
-  const key = optionalEnv("DEPLOYER_PRIVATE_KEY");
-  if (!token || !key) return undefined;
-  const hash = await wallet(key).writeContract({
-    address: token,
-    abi: issueAbi,
-    functionName: "issue",
-    args: [supplier, amount, BigInt(Math.floor(Date.now() / 1000) + 14 * 86400)],
-  });
-  const receipt = await publicClient().waitForTransactionReceipt({ hash });
-  for (const log of receipt.logs) {
-    try {
-      const ev = decodeEventLog({ abi: issueAbi, ...log });
-      if (ev.eventName === "InvoiceIssued") return await visible(Number(ev.args.id));
-    } catch {}
-  }
-  throw new Error("InvoiceIssued event not found");
-}
+/** The company this treasury agent pays for (its wallet is the invoice `payer`). */
+export const payerAddress = () => privateKeyToAccount(env("AGENT_PRIVATE_KEY") as Hex).address;
 
-/** Public RPCs are load-balanced; wait until the new invoice is readable before the seller is asked for it. */
-async function visible(id: number): Promise<number> {
-  for (let i = 0; i < 20; i++) {
-    if (await getInvoice(id)) return id;
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  return id;
+/**
+ * Supplier side: issue an invoice to our company. The NFT is minted to the supplier's wallet.
+ * `payTo` is where the supplier asks to be paid (scenario 2: a swapped, sanctioned payout address).
+ * Returns as soon as the tx is submitted; the agent's listener picks up the InvoiceIssued event.
+ */
+export async function supplierIssueInvoice(payTo: `0x${string}`, amount: bigint, dueInDays = 14): Promise<Hex> {
+  const token = cfg.invoiceToken();
+  if (!token) throw new Error("INVOICE_TOKEN_ADDRESS not set");
+  return wallet(env("SUPPLIER_PRIVATE_KEY")).writeContract({
+    address: token,
+    abi: invoiceTokenAbi,
+    functionName: "issue",
+    args: [payerAddress(), payTo, amount, BigInt(Math.floor(Date.now() / 1000) + dueInDays * 86400)],
+  });
 }
 
 /** Agent marks the invoice NFT paid, referencing the x402 settlement tx. */

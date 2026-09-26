@@ -14,6 +14,7 @@ import {
   type PaymentIntent,
 } from "./worldid.js";
 import type { HumanAction } from "./scenarios.js";
+import type { IssuedInvoice } from "./listener.js";
 
 /**
  * GuardPay agent loop for one invoice:
@@ -27,6 +28,8 @@ export interface RunOptions {
   /** Mock-mode only: simulate the human in World App. "manual" waits for the dashboard. */
   human?: HumanAction;
   ttlSeconds?: number;
+  /** Set when the invoice was picked up by the on-chain listener. */
+  origin?: IssuedInvoice;
 }
 
 const intentOf = (invoiceId: number, q: Quote): PaymentIntent => ({
@@ -40,6 +43,12 @@ const intentOf = (invoiceId: number, q: Quote): PaymentIntent => ({
 export async function payInvoice(invoiceId: number, opts: RunOptions = {}): Promise<DecisionRecord> {
   const rec = newRecord({ id: randomUUID(), invoiceId, scenario: opts.scenario });
   try {
+    const o = opts.origin;
+    if (o) {
+      update(rec, { issuer: o.issuer, issueTx: o.txHash, dueDate: o.dueDate },
+        "Invoice issued by supplier", `NFT #${o.id} minted to ${o.issuer} (tx ${o.txHash})`);
+      update(rec, {}, "Agent detected InvoiceIssued", `block ${o.blockNumber}, due ${new Date(o.dueDate * 1000).toISOString().slice(0, 10)}`);
+    }
     // 1. Ask the supplier what it wants (x402 402 Payment Required)
     const q = await quote(invoiceId);
     const r = q.requirements;

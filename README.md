@@ -279,13 +279,13 @@ Every payment is screened **before the agent's signed x402 authorization leaves 
 
 | What | Endpoint | Code |
 | --- | --- | --- |
-| HTTP client (auth, timeout, rate-limit spacing, 429 retry) | – | [agent/src/intercepta.ts:46-75](agent/src/intercepta.ts#L46-L75) |
-| payTo quick scan | `GET /api/public/v2/extension/account/{address}/quick-scan` | [agent/src/intercepta.ts:108](agent/src/intercepta.ts#L108) |
-| payTo deep scan (if the quick scan finds anything) | `GET /api/public/v2/extension/account/{address}/toxic-score` | [agent/src/intercepta.ts:113](agent/src/intercepta.ts#L113) |
-| token scan | `GET /api/public/v2/extension/token-intelligence/token/{address}/risks` | [agent/src/intercepta.ts:148](agent/src/intercepta.ts#L148) |
-| signed x402 authorization (EIP-712) | `POST /api/public/v2/extension/analysis/signature` | [agent/src/intercepta.ts:223](agent/src/intercepta.ts#L223) |
-| authorization integrity (signed `to`/`value` = screened payTo/amount) | – | [agent/src/intercepta.ts:210](agent/src/intercepta.ts#L210) |
-| pipeline entry | `screenPayment()` | [agent/src/intercepta.ts:251](agent/src/intercepta.ts#L251) |
+| HTTP client (auth, timeout, rate-limit spacing, 429 retry) | – | [agent/src/intercepta.ts:46-86](agent/src/intercepta.ts#L46-L86) |
+| payTo quick scan | `GET /api/public/v2/extension/account/{address}/quick-scan` | [agent/src/intercepta.ts:120](agent/src/intercepta.ts#L120) |
+| payTo deep scan (if the quick scan finds anything) | `GET /api/public/v2/extension/account/{address}/toxic-score` | [agent/src/intercepta.ts:125](agent/src/intercepta.ts#L125) |
+| token scan | `GET /api/public/v2/extension/token-intelligence/token/{address}/risks` | [agent/src/intercepta.ts:160](agent/src/intercepta.ts#L160) |
+| signed x402 authorization (EIP-712) | `POST /api/public/v2/extension/analysis/signature` | [agent/src/intercepta.ts:235](agent/src/intercepta.ts#L235) |
+| authorization integrity (signed `to`/`value` = screened payTo/amount) | – | [agent/src/intercepta.ts:222](agent/src/intercepta.ts#L222) |
+| pipeline entry | `screenPayment()` | [agent/src/intercepta.ts:263](agent/src/intercepta.ts#L263) |
 | called before paying, and again after human approval | – | [agent/src/agent.ts:63](agent/src/agent.ts#L63), [agent/src/agent.ts:86](agent/src/agent.ts#L86) |
 | verdict → decision | `decide()` | [agent/src/policy.ts:27](agent/src/policy.ts#L27), called at [agent/src/agent.ts:67](agent/src/agent.ts#L67) |
 
@@ -310,8 +310,8 @@ Every payment is screened **before the agent's signed x402 authorization leaves 
 | --- | --- |
 | Verification request | OIDC device authorization grant to the World ID for Agents issuer. It carries a human-readable description of the exact payment: [worldid.ts:132](agent/src/worldid.ts#L132) |
 | User completion | The treasurer approves (or denies) in World App. The dashboard shows the pending request with its countdown |
-| Validated result | Backend validation of the id_token, covering the JWKS signature, `iss`, `aud`, `exp`, `acr = orb-v3`, a fresh `auth_time`, a single-use `jti` and an optional approver allowlist: [worldid.ts:231](agent/src/worldid.ts#L231) |
-| Protected agent action | x402 payment and `markPaid`. The approval is consumed once and only for the matching intent hash (invoice, payTo, asset, amount, network): [worldid.ts:266](agent/src/worldid.ts#L266), [agent.ts:77-82](agent/src/agent.ts#L77-L82) |
+| Validated result | Backend validation of the id_token, covering the JWKS signature, `iss`, `aud`, `exp`, `acr = orb-v3`, a fresh `auth_time`, a single-use `jti` and an optional approver allowlist: [worldid.ts:234](agent/src/worldid.ts#L234) |
+| Protected agent action | x402 payment and `markPaid`. The approval is consumed once and only for the matching intent hash (invoice, payTo, asset, amount, network): [worldid.ts:269](agent/src/worldid.ts#L269), [agent.ts:77-82](agent/src/agent.ts#L77-L82) |
 | Unsuccessful paths | **Denied**, **expired**, **cancelled** (by the operator) and **invalid** (the token fails validation) all end as **NOT PAID**. Scenarios 4 and 4b are shown live above |
 
 No client secret reaches the browser. The dashboard can relay the human's action or cancel a request, but it can never mark anything approved.

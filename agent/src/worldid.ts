@@ -218,7 +218,7 @@ export async function waitForApproval(id: string): Promise<Approval> {
     } else if (body.error === "slow_down") {
       interval += 5;
     } else if (body.error === "access_denied") {
-      setStatus(id, "denied", "human denied the payment in World App");
+      setStatus(id, "denied", "human denied the approval in World ID");
     } else if (body.error === "expired_token") {
       setStatus(id, "expired", "World ID approval request expired");
     } else {

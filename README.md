@@ -204,6 +204,7 @@ The run above used `WORLD_MODE=mock`, our local issuer that speaks the same OIDC
 | #7 | $2.00 | CLEAN | approved, id_token validated | **PAID** | [issue](https://sepolia.basescan.org/tx/0x76355e839618401f177c6940def0b9e75b2550f52bbbfbcea804c0797be51caf) · [USDC](https://sepolia.basescan.org/tx/0x88ba993f690dc27e778520882d7ce89110189d507be7321bc61351b9c8121881) · [markPaid](https://sepolia.basescan.org/tx/0x19731bcfae58ad17ffc589789fb1f855694bd95a317a8cd579b297fe1769a557) |
 | #8 | $2.00 | CLEAN | approved, id_token validated | **PAID** | [issue](https://sepolia.basescan.org/tx/0x486aff7de19c85577ad84ef292f7c44f217f0417550d4c609145e1ab0165d983) · [USDC](https://sepolia.basescan.org/tx/0xdc0402ef666062b92659fb963e0f86ebee03870eb669563e7f018100e76e24c7) · [markPaid](https://sepolia.basescan.org/tx/0xc8395f47a0e22f785cd61944d330211b3fe6459fafa3bcb56414514a0bcac7ab) |
 | #12 | $2.00 | CLEAN | approved, id_token validated | **PAID** | [issue](https://sepolia.basescan.org/tx/0xfa5120973f01347d15dd984b363a946a8a57ed3f1bcfe92b80004afb0f52ffbb) · [USDC](https://sepolia.basescan.org/tx/0x2d8047ac5af15ca618909c4a9fa31969781edebcf2470c216a8e79db3652b15d) · [markPaid](https://sepolia.basescan.org/tx/0x3c103a253ba11f63b38a98040af5df1e87a3b780d511d526ca3853708c6c5680) |
+| #17 | $2.00 | CLEAN | **denied** on World's page (token endpoint returned `access_denied`) | **NOT PAID**: no signature sent, no USDC moved | [issue](https://sepolia.basescan.org/tx/0xf1bbc17418ae97035eb2ab1899d6223b6f4fa507a4e42b4cc355d3351039d7b2) |
 
 ---
 

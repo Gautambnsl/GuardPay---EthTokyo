@@ -197,6 +197,14 @@ In every run, the supplier issued the invoice on-chain, the agent picked it up f
 | 4 | $2.00, human denies | CLEAN | ESCALATE | denied | **NOT PAID** | [issue](https://sepolia.basescan.org/tx/0x26bfc61edb09658b78f73c9a6471ceec66a6accffed2a390b23632121f5ed680) |
 | 4b | $2.00, approval expires | CLEAN | ESCALATE | expired | **NOT PAID** | [issue](https://sepolia.basescan.org/tx/0x2447772255c9a50801622c3bcf818aa19bc7371743dcc671465063baa015cef1) |
 
+The run above used `WORLD_MODE=mock`, our local issuer that speaks the same OIDC protocol, for the World ID steps. The same flow was then run against **World's official sandbox** (`WORLD_MODE=oidc`, `https://sandbox.auth.world.org`), with a human approving on World's page and GuardPay validating the returned id_token (issuer `https://sandbox.auth.world.org`, audience = our client ID, `acr = https://world.org/oidc/acr/orb-v3`, fresh `auth_time`, single-use `jti`):
+
+| Invoice | Amount | Intercepta | World ID (official sandbox) | Outcome | Transactions |
+| --- | --- | --- | --- | --- | --- |
+| #7 | $2.00 | CLEAN | approved, id_token validated | **PAID** | [issue](https://sepolia.basescan.org/tx/0x76355e839618401f177c6940def0b9e75b2550f52bbbfbcea804c0797be51caf) · [USDC](https://sepolia.basescan.org/tx/0x88ba993f690dc27e778520882d7ce89110189d507be7321bc61351b9c8121881) · [markPaid](https://sepolia.basescan.org/tx/0x19731bcfae58ad17ffc589789fb1f855694bd95a317a8cd579b297fe1769a557) |
+| #8 | $2.00 | CLEAN | approved, id_token validated | **PAID** | [issue](https://sepolia.basescan.org/tx/0x486aff7de19c85577ad84ef292f7c44f217f0417550d4c609145e1ab0165d983) · [USDC](https://sepolia.basescan.org/tx/0xdc0402ef666062b92659fb963e0f86ebee03870eb669563e7f018100e76e24c7) · [markPaid](https://sepolia.basescan.org/tx/0xc8395f47a0e22f785cd61944d330211b3fe6459fafa3bcb56414514a0bcac7ab) |
+| #12 | $2.00 | CLEAN | approved, id_token validated | **PAID** | [issue](https://sepolia.basescan.org/tx/0xfa5120973f01347d15dd984b363a946a8a57ed3f1bcfe92b80004afb0f52ffbb) · [USDC](https://sepolia.basescan.org/tx/0x2d8047ac5af15ca618909c4a9fa31969781edebcf2470c216a8e79db3652b15d) · [markPaid](https://sepolia.basescan.org/tx/0x3c103a253ba11f63b38a98040af5df1e87a3b780d511d526ca3853708c6c5680) |
+
 ---
 
 ## Repo layout
@@ -327,7 +335,7 @@ No client secret reaches the browser. The dashboard can relay the human's action
 
 ### Integration debrief
 
-- **Time to first success:** about 5 minutes from starting `worldid.ts` to the first backend-validated approval. The client is standard OIDC: discovery, device authorization, token polling and JWKS.
+- **Time to first success:** about 5 minutes from starting `worldid.ts` to the first backend-validated approval against our protocol-identical local issuer. After registering a sandbox app in the portal, the first real approval through `sandbox.auth.world.org` worked on the first try, a few minutes later, with no code changes. The client is standard OIDC: discovery, device authorization, token polling and JWKS.
 - **Friction:**
   - `sandbox.auth.world.org/docs` is conceptual. We found the concrete endpoints (device authorization, token, JWKS, `acr` values) by reading `/.well-known/openid-configuration`.
   - The agent plugin helps a *coding* agent register apps; it isn't a runtime SDK for an autonomous agent.

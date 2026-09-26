@@ -26,8 +26,13 @@ export async function runScenario(s: Scenario, human: HumanAction): Promise<Deci
   return new Promise<DecisionRecord>((resolve, reject) => {
     supplierIssueInvoice(s.supplier(), s.amount)
       .then((txHash) => {
-        pendingIssues.set(txHash.toLowerCase(), { scenario: s.key, human, ttlSeconds: s.ttlSeconds, since: Date.now(), txHash, resolve });
+        const key = txHash.toLowerCase();
+        pendingIssues.set(key, { scenario: s.key, human, ttlSeconds: s.ttlSeconds, since: Date.now(), txHash, resolve });
         console.log(`[supplier] issued invoice for scenario ${s.key} (tx ${txHash})`);
+        // Never leave the dashboard hanging if the event is missed.
+        setTimeout(() => {
+          if (pendingIssues.delete(key)) reject(new Error(`listener did not pick up invoice tx ${txHash} within 90s`));
+        }, 90_000);
       })
       .catch(reject);
   });
@@ -44,7 +49,13 @@ function onInvoiceIssued(inv: IssuedInvoice) {
 
 export async function runAll(human: "auto" | "manual" = "auto") {
   const out: DecisionRecord[] = [];
-  for (const s of SCENARIOS) out.push(await runScenario(s, human === "auto" ? s.autoHuman : "manual"));
+  for (const s of SCENARIOS) {
+    try {
+      out.push(await runScenario(s, human === "auto" ? s.autoHuman : "manual"));
+    } catch (e) {
+      console.error(`[agent] scenario ${s.key} failed:`, (e as Error).message);
+    }
+  }
   return out;
 }
 
@@ -80,7 +91,9 @@ export async function startServer() {
   const guard = (fn: () => Promise<unknown>) => {
     if (busy) return false;
     busy = true;
-    fn().finally(() => (busy = false));
+    fn()
+      .catch((e) => console.error("[agent] run failed:", (e as Error).message))
+      .finally(() => (busy = false));
     return true;
   };
 

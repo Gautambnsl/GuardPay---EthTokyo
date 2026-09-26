@@ -65,7 +65,11 @@ export interface Settlement {
   body?: unknown;
 }
 
-export async function submit(q: Quote, payload: PaymentPayload): Promise<Settlement> {
+/**
+ * Send the signed payment. The public testnet facilitator occasionally fails to settle; on a
+ * settlement failure we retry once with a freshly signed authorization (same screened payTo/amount).
+ */
+export async function submit(q: Quote, payload: PaymentPayload, retries = 1): Promise<Settlement> {
   const res = await fetch(q.url, { method: "POST", headers: http().encodePaymentSignatureHeader(payload) });
   const body = await res.json().catch(() => undefined);
   if (!res.ok) {
@@ -74,6 +78,17 @@ export async function submit(q: Quote, payload: PaymentPayload): Promise<Settlem
       const pr = http().getPaymentRequiredResponse((h) => res.headers.get(h), body);
       if (pr.error) error += `: ${pr.error}`;
     } catch {}
+    try {
+      const settle = http().getPaymentSettleResponse((h) => res.headers.get(h));
+      if (settle.errorReason) error += `: ${settle.errorReason}${settle.errorMessage ? ` (${settle.errorMessage})` : ""}`;
+    } catch {}
+    const permanent = /insufficient|invalid_exact_evm_payload|already paid/i.test(error) || res.status === 409;
+    if (retries > 0 && res.status === 402 && !permanent) {
+      console.warn(`[x402] ${error}; retrying once with a fresh authorization`);
+      const fresh = await sign(q);
+      const a = authorizationOf(payload), b = authorizationOf(fresh);
+      if (a.to === b.to && a.value === b.value) return submit(q, fresh, retries - 1);
+    }
     return { ok: false, error, body };
   }
   const settle = http().getPaymentSettleResponse((h) => res.headers.get(h));
